@@ -28,6 +28,18 @@ if config.config_file_name is not None:
 # target_metadata = mymodel.Base.metadata
 from app.core.database import Base
 target_metadata = Base.metadata
+# ensure all model modules are imported so their tables are registered
+# with the Base.metadata used by Alembic's autogenerate
+
+import app.models.forecast
+import app.models.optimisation
+import app.models.site
+import app.models.tariff
+import app.models.schedule
+import app.models.battery
+import app.models.agilerates
+import app.models.solcastforecast
+import app.models.historicenergydata
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
