@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy>=2.0
+psycopg2-binary
+alembic
+python-dotenv
+pydantic
+pandas
+requests
+numpy
+foxesscloud
+cvxpy
+pytest
+pytest-asyncio
+matplotlib
+
