@@ -7,7 +7,7 @@ app = FastAPI(title="Energy Optimiser API")
 
 # Configure allowed origins via FRONTEND_ORIGINS env var (comma-separated).
 # Example: FRONTEND_ORIGINS="http://localhost:3000,http://10.5.0.2:3000"
-raw = os.environ.get("FRONTEND_ORIGINS", "http://localhost:3000,http://localhost:8000")
+raw = os.environ.get("FRONTEND_ORIGINS", "http://localhost:3000,http://localhost:8000,https://home-battery-optimisation.vercel.app")
 origins = [o.strip() for o in raw.split(",") if o.strip()]
 
 # Enable CORS
