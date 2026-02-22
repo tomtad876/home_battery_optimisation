@@ -117,7 +117,10 @@ export default function ScheduleCharts({ schedule }) {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
             <YAxis label={{ value: 'Cost (£)', angle: -90, position: 'insideLeft' }} />
-            <Tooltip formatter={(value) => value.toFixed(2)} />
+            <Tooltip formatter={(value) => {
+              if (value === undefined || value === null || Number.isNaN(Number(value))) return '0.00'
+              return Number(value).toFixed(2)
+            }} />
             <Legend />
             <Line type="monotone" dataKey="cumulative_cost" stroke="#8B5CF6" name="Cumulative Cost (£)" strokeWidth={2} dot={false} />
           </LineChart>

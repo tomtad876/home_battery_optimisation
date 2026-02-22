@@ -25,7 +25,19 @@ export default function Home() {
       }
       const data = await response.json()
       setSummary(data.summary)
-      setSchedule(data.schedule)
+      // Normalize schedule keys returned by backend to the frontend shape
+      const normalized = (data.schedule || []).map((r) => ({
+        period_end: r.PeriodEnd ?? r.period_end,
+        pv_estimate: r.PvEstimate ?? r.solar ?? r.pv_estimate ?? 0,
+        demand: r.demand ?? r.demand_kwh ?? 0,
+        price: r.price ?? r.import_price ?? 0,
+        soc_pct: r.soc_pct ?? r.socPct ?? 0,
+        batt_charge_kwh: r.batt_charge_kwh ?? r.batt_charge ?? 0,
+        batt_discharge_kwh: r.batt_discharge_kwh ?? r.batt_discharge ?? 0,
+        grid_import_kwh: r.grid_import_kwh ?? r.grid_import ?? 0,
+        grid_export_kwh: r.grid_export_kwh ?? r.grid_export ?? 0,
+      }))
+      setSchedule(normalized)
     } catch (err) {
       setError(err.message)
     } finally {
