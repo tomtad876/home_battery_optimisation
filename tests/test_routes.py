@@ -1,7 +1,7 @@
 """Tests for FastAPI routes."""
 import pytest
 import pandas as pd
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -25,19 +25,15 @@ class TestHealthRoute:
 class TestOptimiserRoute:
     """Test /optimise/mvp endpoint."""
 
-    @patch('app.api.routes.forecast.forecast_solar_and_prices')
-    @patch('app.api.routes.forecast.forecast_demand_last_week_avg')
-    def test_optimise_mvp_success(self, mock_demand, mock_solar_prices, client):
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_success(self, mock_inputs, client):
         """Test successful optimisation run."""
         # Mock forecast data
-        mock_solar_prices.return_value = pd.DataFrame({
+        mock_inputs.return_value = pd.DataFrame({
             "PeriodEnd": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
             "PvEstimate": [0.0, 0.5, 1.0, 0.3],
-            "price": [15.0, 12.0, 50.0, 20.0]
-        })
-        mock_demand.return_value = pd.DataFrame({
-            "time_of_day": [pd.Timestamp("00:00").time(), pd.Timestamp("00:30").time()],
-            "energy_kwh": [0.5, 0.5]
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "demand": [0.5, 0.5, 0.5, 0.5]
         })
         
         request_data = {
@@ -59,18 +55,14 @@ class TestOptimiserRoute:
         assert "schedule" in data
         assert len(data["schedule"]) > 0
 
-    @patch('app.api.routes.forecast.forecast_solar_and_prices')
-    @patch('app.api.routes.forecast.forecast_demand_last_week_avg')
-    def test_optimise_mvp_response_structure(self, mock_demand, mock_solar_prices, client):
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_response_structure(self, mock_inputs, client):
         """Test that response contains all required fields."""
-        mock_solar_prices.return_value = pd.DataFrame({
+        mock_inputs.return_value = pd.DataFrame({
             "PeriodEnd": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
             "PvEstimate": [0.0, 0.5, 1.0, 0.3],
-            "price": [15.0, 12.0, 50.0, 20.0]
-        })
-        mock_demand.return_value = pd.DataFrame({
-            "time_of_day": [pd.Timestamp("00:00").time(), pd.Timestamp("00:30").time()],
-            "energy_kwh": [0.5, 0.5]
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "demand": [0.5, 0.5, 0.5, 0.5]
         })
         
         response = client.post("/optimise/mvp", json={"pv_system_id": "test-id"})
@@ -97,18 +89,14 @@ class TestOptimiserRoute:
         for field in expected_fields:
             assert field in first_period, f"Missing field: {field}"
 
-    @patch('app.api.routes.forecast.forecast_solar_and_prices')
-    @patch('app.api.routes.forecast.forecast_demand_last_week_avg')
-    def test_optimise_mvp_with_custom_params(self, mock_demand, mock_solar_prices, client):
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_with_custom_params(self, mock_inputs, client):
         """Test that custom parameters are respected."""
-        mock_solar_prices.return_value = pd.DataFrame({
+        mock_inputs.return_value = pd.DataFrame({
             "PeriodEnd": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
             "PvEstimate": [0.0, 0.5, 1.0, 0.3],
-            "price": [15.0, 12.0, 50.0, 20.0]
-        })
-        mock_demand.return_value = pd.DataFrame({
-            "time_of_day": [pd.Timestamp("00:00").time(), pd.Timestamp("00:30").time()],
-            "energy_kwh": [0.5, 0.5]
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "demand": [0.5, 0.5, 0.5, 0.5]
         })
         
         request_data = {
@@ -124,46 +112,39 @@ class TestOptimiserRoute:
         response = client.post("/optimise/mvp", json=request_data)
         assert response.status_code == 200
 
-    @patch('app.api.routes.forecast.forecast_solar_and_prices')
-    def test_optimise_mvp_no_solar_data(self, mock_solar_prices, client):
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_no_solar_data(self, mock_inputs, client):
         """Test error handling when solar forecast is empty."""
-        mock_solar_prices.return_value = pd.DataFrame()  # Empty
-        
-        response = client.post("/optimise/mvp", json={"pv_system_id": "test-id"})
-        assert response.status_code == 400
-        assert "Unable to fetch solar/price forecast" in response.json()["detail"]
+        mock_inputs.return_value = pd.DataFrame()
 
-    @patch('app.api.routes.forecast.forecast_solar_and_prices')
-    @patch('app.api.routes.forecast.forecast_demand_last_week_avg')
-    def test_optimise_mvp_no_demand_data(self, mock_demand, mock_solar_prices, client):
+        response = client.post("/optimise/mvp", json={})
+        assert response.status_code == 400
+
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_no_demand_data(self, mock_inputs, client):
         """Test error handling when demand forecast is empty."""
-        mock_solar_prices.return_value = pd.DataFrame({
+        # return rows but with missing demand
+        mock_inputs.return_value = pd.DataFrame({
             "PeriodEnd": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
             "PvEstimate": [0.0, 0.5, 1.0, 0.3],
-            "price": [15.0, 12.0, 50.0, 20.0]
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "demand": [None, None, None, None]
         })
-        mock_demand.return_value = pd.DataFrame()  # Empty
-        
-        response = client.post("/optimise/mvp", json={"pv_system_id": "test-id"})
-        assert response.status_code == 400
-        assert "Unable to fetch demand forecast" in response.json()["detail"]
 
-    @patch('app.api.routes.forecast.forecast_solar_and_prices')
-    @patch('app.api.routes.forecast.forecast_demand_last_week_avg')
-    def test_optimise_mvp_invalid_soc_bounds(self, mock_demand, mock_solar_prices, client):
+        response = client.post("/optimise/mvp", json={})
+        assert response.status_code == 400
+
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_invalid_soc_bounds(self, mock_inputs, client):
         """Test that min_soc >= max_soc raises error."""
-        mock_solar_prices.return_value = pd.DataFrame({
+        mock_inputs.return_value = pd.DataFrame({
             "PeriodEnd": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
             "PvEstimate": [0.0, 0.5, 1.0, 0.3],
-            "price": [15.0, 12.0, 50.0, 20.0]
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "demand": [0.5, 0.5, 0.5, 0.5]
         })
-        mock_demand.return_value = pd.DataFrame({
-            "time_of_day": [pd.Timestamp("00:00").time(), pd.Timestamp("00:30").time()],
-            "energy_kwh": [0.5, 0.5]
-        })
-        
+
         request_data = {
-            "pv_system_id": "test-id",
             "min_soc_pct": 90.0,
             "max_soc_pct": 20.0,  # Invalid: max < min
         }

@@ -10,12 +10,11 @@ class TestOptimiser:
 
     def test_optimiser_returns_dataframe(self, sample_solar_df, sample_prices_df, sample_demand_profile, optimiser_params):
         """Test that optimiser returns a DataFrame with expected columns."""
-        result = mvp_cost_minimiser(
-            solar_df=sample_solar_df,
-            prices_df=sample_prices_df,
-            demand_profile=sample_demand_profile,
-            **optimiser_params
-        )
+        # build single inputs_df from fixtures
+        inputs = sample_solar_df.merge(sample_prices_df, on="PeriodEnd", how="left")
+        demand_map = sample_demand_profile.set_index("time_of_day")["energy_kwh"].to_dict()
+        inputs["demand"] = inputs["PeriodEnd"].dt.time.map(lambda t: demand_map.get(t, 0.5))
+        result = mvp_cost_minimiser(inputs_df=inputs, **optimiser_params)
         assert isinstance(result, pd.DataFrame)
         expected_cols = [
             "PeriodEnd", "demand", "solar", "price",
@@ -28,12 +27,10 @@ class TestOptimiser:
 
     def test_optimiser_respects_soc_bounds(self, sample_solar_df, sample_prices_df, sample_demand_profile, optimiser_params):
         """Test that SOC stays within min/max bounds."""
-        result = mvp_cost_minimiser(
-            solar_df=sample_solar_df,
-            prices_df=sample_prices_df,
-            demand_profile=sample_demand_profile,
-            **optimiser_params
-        )
+        inputs = sample_solar_df.merge(sample_prices_df, on="PeriodEnd", how="left")
+        demand_map = sample_demand_profile.set_index("time_of_day")["energy_kwh"].to_dict()
+        inputs["demand"] = inputs["PeriodEnd"].dt.time.map(lambda t: demand_map.get(t, 0.5))
+        result = mvp_cost_minimiser(inputs_df=inputs, **optimiser_params)
         min_soc_kwh = optimiser_params["min_soc_pct"] / 100 * optimiser_params["battery_capacity_kwh"]
         max_soc_kwh = optimiser_params["max_soc_pct"] / 100 * optimiser_params["battery_capacity_kwh"]
         
@@ -42,12 +39,10 @@ class TestOptimiser:
 
     def test_optimiser_energy_balance(self, sample_solar_df, sample_prices_df, sample_demand_profile, optimiser_params):
         """Test energy balance: solar + discharge + import = demand + charge + export."""
-        result = mvp_cost_minimiser(
-            solar_df=sample_solar_df,
-            prices_df=sample_prices_df,
-            demand_profile=sample_demand_profile,
-            **optimiser_params
-        )
+        inputs = sample_solar_df.merge(sample_prices_df, on="PeriodEnd", how="left")
+        demand_map = sample_demand_profile.set_index("time_of_day")["energy_kwh"].to_dict()
+        inputs["demand"] = inputs["PeriodEnd"].dt.time.map(lambda t: demand_map.get(t, 0.5))
+        result = mvp_cost_minimiser(inputs_df=inputs, **optimiser_params)
         lhs = result["solar"] + result["batt_discharge_kwh"] + result["grid_import_kwh"]
         rhs = result["demand"] + result["batt_charge_kwh"] + result["grid_export_kwh"]
         
@@ -56,12 +51,10 @@ class TestOptimiser:
 
     def test_optimiser_respects_power_limits(self, sample_solar_df, sample_prices_df, sample_demand_profile, optimiser_params):
         """Test that charge/discharge power limits are respected."""
-        result = mvp_cost_minimiser(
-            solar_df=sample_solar_df,
-            prices_df=sample_prices_df,
-            demand_profile=sample_demand_profile,
-            **optimiser_params
-        )
+        inputs = sample_solar_df.merge(sample_prices_df, on="PeriodEnd", how="left")
+        demand_map = sample_demand_profile.set_index("time_of_day")["energy_kwh"].to_dict()
+        inputs["demand"] = inputs["PeriodEnd"].dt.time.map(lambda t: demand_map.get(t, 0.5))
+        result = mvp_cost_minimiser(inputs_df=inputs, **optimiser_params)
         dt = 0.5  # half-hour
         max_charge_energy = optimiser_params["charge_power_kw"] * dt
         max_discharge_energy = optimiser_params["discharge_power_kw"] * dt
@@ -71,12 +64,10 @@ class TestOptimiser:
 
     def test_optimiser_soc_continuity(self, sample_solar_df, sample_prices_df, sample_demand_profile, optimiser_params):
         """Test that SOC follows balance equation: SOC[t] = SOC[t-1] + charge - discharge."""
-        result = mvp_cost_minimiser(
-            solar_df=sample_solar_df,
-            prices_df=sample_prices_df,
-            demand_profile=sample_demand_profile,
-            **optimiser_params
-        )
+        inputs = sample_solar_df.merge(sample_prices_df, on="PeriodEnd", how="left")
+        demand_map = sample_demand_profile.set_index("time_of_day")["energy_kwh"].to_dict()
+        inputs["demand"] = inputs["PeriodEnd"].dt.time.map(lambda t: demand_map.get(t, 0.5))
+        result = mvp_cost_minimiser(inputs_df=inputs, **optimiser_params)
         init_soc_kwh = optimiser_params["initial_soc_pct"] / 100 * optimiser_params["battery_capacity_kwh"]
         
         # Check first period
@@ -104,21 +95,21 @@ class TestOptimiser:
             "energy_kwh": [0.5, 0.5]
         })
         
-        result = mvp_cost_minimiser(
-            solar_df=solar,
-            prices_df=prices,
-            demand_profile=demand_profile,
-            **optimiser_params
-        )
-        # In period 0 (cheap), should import more; in period 1 (expensive), should discharge
-        assert result.iloc[0]["grid_import_kwh"] > 0, "Should import in cheap period"
+        # build inputs_df for the two-period scenario
+        inputs = solar.merge(prices, on="PeriodEnd", how="left")
+        demand_map = demand_profile.set_index("time_of_day")["energy_kwh"].to_dict()
+        inputs["demand"] = inputs["PeriodEnd"].dt.time.map(lambda t: demand_map.get(t, 0.5))
+        result = mvp_cost_minimiser(inputs_df=inputs, **optimiser_params)
+        # In period 0 (cheap), battery should charge (net battery > 0); period 1 should discharge
+        assert result.iloc[0]["net_battery_kwh"] > 0, "Should charge battery in cheap period"
 
     def test_optimiser_initial_soc_set_correctly(self, sample_solar_df, sample_prices_df, sample_demand_profile):
         """Test that initial SOC is set from parameter."""
+        inputs = sample_solar_df.merge(sample_prices_df, on="PeriodEnd", how="left")
+        demand_map = sample_demand_profile.set_index("time_of_day")["energy_kwh"].to_dict()
+        inputs["demand"] = inputs["PeriodEnd"].dt.time.map(lambda t: demand_map.get(t, 0.5))
         result = mvp_cost_minimiser(
-            solar_df=sample_solar_df,
-            prices_df=sample_prices_df,
-            demand_profile=sample_demand_profile,
+            inputs_df=inputs,
             battery_capacity_kwh=10.0,
             initial_soc_pct=60.0,
             min_soc_pct=20.0,

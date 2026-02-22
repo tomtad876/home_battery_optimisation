@@ -20,7 +20,7 @@ export default function ScheduleCharts({ schedule }) {
     const period1 = schedule[i]
     const period2 = i + 1 < schedule.length ? schedule[i + 1] : period1
 
-    const hour = new Date(period1.PeriodEnd).toLocaleTimeString('en-US', {
+    const hour = new Date(period1.period_end).toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
@@ -28,7 +28,7 @@ export default function ScheduleCharts({ schedule }) {
 
     hourlyData.push({
       time: hour,
-      solar: (period1.solar + (period2?.solar || 0)) / 2,
+      pv_estimate: (period1.pv_estimate + (period2?.pv_estimate || 0)) / 2,
       demand: (period1.demand + (period2?.demand || 0)) / 2,
       price: (period1.price + (period2?.price || 0)) / 2,
       soc_pct: period2?.soc_pct || period1.soc_pct,
@@ -52,7 +52,7 @@ export default function ScheduleCharts({ schedule }) {
             <YAxis yAxisId="right" orientation="right" label={{ value: 'pence/kWh', angle: 90, position: 'insideRight' }} />
             <Tooltip />
             <Legend />
-            <Line yAxisId="left" type="monotone" dataKey="solar" stroke="#FBBF24" name="Solar (kWh)" strokeWidth={2} dot={false} />
+            <Line yAxisId="left" type="monotone" dataKey="pv_estimate" stroke="#FBBF24" name="Solar (kWh)" strokeWidth={2} dot={false} />
             <Line yAxisId="left" type="monotone" dataKey="demand" stroke="#A78BFA" name="Demand (kWh)" strokeWidth={2} dot={false} />
             <Line yAxisId="right" type="monotone" dataKey="price" stroke="#EF4444" name="Price (p/kWh)" strokeWidth={2} dot={false} />
           </LineChart>

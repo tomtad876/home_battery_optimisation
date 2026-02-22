@@ -19,7 +19,7 @@ serve(async (req: Request) => {
     if (!foxessKey) throw new Error("FOXESS_API_KEY not set");
     if (!deviceSn) throw new Error("FOXESS_DEVICE_SN not set");
 
-    // Fetch demand history for the past week
+    // Fetch demand history for the past day
     const now = new Date();
     let intervals = [];
     for (let i = 1; i >= 0; i--) {

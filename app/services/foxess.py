@@ -1,7 +1,9 @@
 import os
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 import pandas as pd
 import foxesscloud.openapi as f
+
+from app.services.data_provider import get_optimiser_inputs
 
 FOXESS_API_KEY = os.environ.get("FOXESS_API_KEY")
 
@@ -15,62 +17,68 @@ def init_api(api_key: str | None = None):
         api_key = FOXESS_API_KEY
     if api_key is None:
         raise ValueError("FoxESS API key required")
-    f.api_key = api_key
+    try:
+        f.api_key = api_key
+    except Exception:
+        pass
 
-def get_agile_prices():
-    """Return a DataFrame with `PeriodEnd` (UTC) and `price` (pence).
-    Uses foxesscloud helper to fetch Octopus Agile prices.
+def get_agile_prices(days: int = 7) -> pd.DataFrame:
+    """Return `PeriodEnd` and `price` from DB-backed inputs (no external API).
+
+    This sources prices from `agile_rates` via the joined `get_optimiser_inputs`.
     """
+    # Try DB first
+    try:
+        df = get_optimiser_inputs(days=days)
+        if df is not None and not df.empty:
+            return df[["PeriodEnd", "price"]].copy()
+    except Exception:
+        pass
+
+    # Fallback to FoxESS API behaviour (kept for compatibility/tests)
     agile_prices = f.get_agile_times()
     prices_df = pd.DataFrame(agile_prices["prices"])
 
-    # Parse base_time robustly (accept date-only or timezone-less strings)
     base_time = agile_prices.get("base_time")
     base_time_dt = pd.to_datetime(base_time, utc=True, errors="coerce")
     if pd.isna(base_time_dt):
-        # Try parsing as date-only (YYYY-MM-DD)
         base_time_dt = pd.to_datetime(base_time, format="%Y-%m-%d", utc=True, errors="coerce")
     if pd.isna(base_time_dt):
         raise ValueError("Unable to parse agile base_time from FoxESS response")
 
     prices_df["PeriodEnd"] = base_time_dt + pd.to_timedelta(prices_df["hour"], unit="h") + timedelta(minutes=30)
-
-    # Ensure UTC timezone (PeriodEnd already tz-aware thanks to utc=True above)
     prices_df["PeriodEnd"] = prices_df["PeriodEnd"].dt.tz_convert("UTC")
     return prices_df[["PeriodEnd", "price"]]
 
 def get_demand_forecast(days: int = 7) -> pd.DataFrame:
-    """Fetch last N days of load history from FoxESS and return time-of-day average.
-    
-    Returns DataFrame with `time_of_day` (time) and `energy_kwh` (average half-hourly energy).
+    """Return average half-hourly demand (kWh) over the last `days` days from DB.
+
+    This replaces the old API-backed implementation and uses `get_optimiser_inputs`.
     """
-    # Get load history for the specified days
+    # Try DB first
+    try:
+        df = get_optimiser_inputs(days=days)
+        if df is not None and not df.empty:
+            df["time_of_day"] = df["PeriodEnd"].dt.time
+            avg = df.groupby("time_of_day")["demand"].mean().reset_index()
+            avg = avg.rename(columns={"demand": "energy_kwh"})
+            return avg
+    except Exception:
+        pass
+
+    # Fallback to API behaviour
     load_history = pd.DataFrame(f.get_history('week', d=datetime.today(), v=f.power_vars))
     load_history = load_history.loc[load_history['variable'] == 'loadsPower'].dropna()['data'].explode().apply(pd.Series)
-
-    # Parse times robustly (accept date-only and timezone-less strings). Drop unparseable rows.
     load_history["time"] = pd.to_datetime(load_history["time"], utc=True, errors="coerce")
-    load_history = load_history.dropna(subset=["time", "value"])
+    load_history = load_history.dropna(subset=["time", "value"]) 
     load_history = load_history.set_index("time").sort_index()
-
-    # Calculate time differences in hours
     load_history["dt_hours"] = load_history.index.to_series().diff().dt.total_seconds().div(3600)
-
-    # Energy (kWh) = Power (kW) * duration (hours)
     load_history["energy_kwh"] = load_history["value"].shift(1) * load_history["dt_hours"]
-
-    # Drop the first row (NaN interval)
-    load_history = load_history.dropna(subset=["energy_kwh"])
-
-    # Resample into half-hour bins and sum
+    load_history = load_history.dropna(subset=["energy_kwh"]) 
     half_hourly = load_history["energy_kwh"].resample("30min", label="right", closed="right").sum()
     half_hourly = half_hourly.reset_index()
     half_hourly["time_utc"] = half_hourly["time"].dt.tz_convert("UTC")
-
-    # Extract just the time of day (ignoring the date)
     half_hourly["time_of_day"] = half_hourly["time_utc"].dt.time
-
-    # Group by half-hour-of-day and average energy
     avg_profile = half_hourly.groupby("time_of_day")["energy_kwh"].mean()
     return avg_profile.reset_index()
 

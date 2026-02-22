@@ -8,9 +8,7 @@ import numpy as np
 
 
 def mvp_cost_minimiser(
-    solar_df: pd.DataFrame,
-    prices_df: pd.DataFrame,
-    demand_profile: pd.DataFrame,
+    inputs_df: pd.DataFrame,
     battery_capacity_kwh: float = 15.0,
     initial_soc_pct: float = 50.0,
     min_soc_pct: float = 20.0,
@@ -26,9 +24,7 @@ def mvp_cost_minimiser(
     charge/discharge schedule given solar forecast, prices, and demand.
 
     Args:
-        solar_df: DataFrame with PeriodEnd (UTC) and PvEstimate (kWh)
-        prices_df: DataFrame with PeriodEnd (UTC) and price (pence/kWh) for import
-        demand_profile: DataFrame with time_of_day and energy_kwh (average past week)
+        inputs_df: DataFrame with period_end (UTC), pv_estimate (kWh), price (pence/kWh), and demand (kWh)
         battery_capacity_kwh: Total battery capacity
         initial_soc_pct: Starting state of charge %
         min_soc_pct, max_soc_pct: Bounds on SOC
@@ -37,42 +33,36 @@ def mvp_cost_minimiser(
         export_price_pence: Fixed export price
 
     Returns:
-        DataFrame with columns: PeriodEnd, demand, solar, price, batt_charge_kwh,
+        DataFrame with columns: period_end, demand, pv_estimate, price, batt_charge_kwh,
                                 batt_discharge_kwh, grid_import_kwh, grid_export_kwh,
                                 soc_kwh, soc_pct, net_battery_kwh, cost_gbp
     """
-    # Merge all inputs using inner joins so we only optimise where we have all data
-    merged = solar_df.copy()
-    merged = merged.merge(prices_df, on="PeriodEnd", how="inner")
-    merged["time_of_day"] = merged["PeriodEnd"].dt.time
-    merged = merged.merge(demand_profile, on="time_of_day", how="inner")
-    merged = merged.rename(columns={"energy_kwh": "demand"})
-    merged = merged.sort_values("PeriodEnd").reset_index(drop=True)
+    inputs_df = inputs_df.sort_values("period_end").reset_index(drop=True)
 
     # Ensure we only keep rows with finite price, solar and demand values
-    numeric_cols = [c for c in ["price", "PvEstimate", "demand"] if c in merged.columns]
+    numeric_cols = [c for c in ["price", "pv_estimate", "demand"] if c in inputs_df.columns]
     if not numeric_cols:
-        raise ValueError("Missing numeric columns (price/PvEstimate/demand) in merged data")
-    mask = merged[numeric_cols].notna().all(axis=1)
+        raise ValueError("Missing numeric columns (price/pv_estimate/demand) in inputs data")
+    mask = inputs_df[numeric_cols].notna().all(axis=1)
     # also ensure values are finite
     for c in numeric_cols:
-        mask &= np.isfinite(merged[c])
+        mask &= np.isfinite(inputs_df[c])
     dropped = (~mask).sum()
     if dropped > 0:
         # drop any rows where we don't have complete finite data
-        merged = merged.loc[mask].reset_index(drop=True)
-    if merged.empty:
+        inputs_df = inputs_df.loc[mask].reset_index(drop=True)
+    if inputs_df.empty:
         raise ValueError("No overlapping data available for optimisation after joining solar, price and demand")
     # fill any remaining small missing solar/demand values with conservative defaults
-    if "PvEstimate" in merged.columns:
-        merged["PvEstimate"] = merged["PvEstimate"].fillna(0.0)
-    if "demand" in merged.columns:
-        merged["demand"] = merged["demand"].fillna(0.5)
+    if "pv_estimate" in inputs_df.columns:
+        inputs_df["pv_estimate"] = inputs_df["pv_estimate"].fillna(0.0)
+    if "demand" in inputs_df.columns:
+        inputs_df["demand"] = inputs_df["demand"].fillna(0.5)
 
-    n = len(merged)
-    import_prices = merged["price"].values / 100.0  # Convert pence to £/kWh
-    solar_gen = merged["PvEstimate"].values
-    demand = merged["demand"].values
+    n = len(inputs_df)
+    import_prices = inputs_df["price"].values / 100.0  # Convert pence to £/kWh
+    solar_gen = inputs_df["pv_estimate"].values
+    demand = inputs_df["demand"].values
     export_price_gbp = export_price_pence / 100.0
 
     # Battery and system parameters
@@ -121,6 +111,14 @@ def mvp_cost_minimiser(
     grid_penalty_weight = 0.001
     penalty = grid_penalty_weight * cp.sum(g_import + g_export)
     cost = cp.sum(cp.multiply(g_import, import_prices) - g_export * export_price_gbp) + penalty
+    # Small incentive to charge in periods where future prices are higher
+    try:
+        future_max_price = float(import_prices.max())
+        price_diff = future_max_price - import_prices
+        alpha = 0.01
+        cost = cost - alpha * cp.sum(cp.multiply(b_charge, price_diff))
+    except Exception:
+        pass
 
     problem = cp.Problem(cp.Minimize(cost), constraints)
     problem.solve(verbose=False)
@@ -132,10 +130,10 @@ def mvp_cost_minimiser(
     timestep_cost = g_import.value * import_prices - g_export.value * export_price_gbp
     soc_pct = (soc.value / battery_capacity_kwh) * 100
 
-    result_df = merged[["PeriodEnd"]].copy()
+    result_df = inputs_df[["period_end"]].copy()
     result_df["demand"] = demand
-    result_df["solar"] = solar_gen
-    result_df["price"] = merged["price"]
+    result_df["pv_estimate"] = solar_gen
+    result_df["price"] = inputs_df["price"]
     # Compute net battery and grid flows and present only net charging OR discharging
     eps = 1e-3
     net_batt = (b_charge.value - b_discharge.value)
