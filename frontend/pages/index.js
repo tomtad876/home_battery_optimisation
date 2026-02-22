@@ -45,6 +45,11 @@ export default function Home() {
     }
   }
 
+  const formatNumber = (v, decimals) => {
+    if (v === undefined || v === null || Number.isNaN(Number(v))) return (0).toFixed(decimals)
+    return Number(v).toFixed(decimals)
+  }
+
   return (
     <>
       <Head>
@@ -82,25 +87,25 @@ export default function Home() {
                     <div className="bg-white rounded-lg shadow p-4">
                       <p className="text-sm text-gray-600">Total Cost</p>
                       <p className="text-2xl font-bold text-blue-600">
-                        £{summary.total_cost_gbp.toFixed(2)}
+                        £{formatNumber(summary?.total_cost_gbp, 2)}
                       </p>
                     </div>
                     <div className="bg-white rounded-lg shadow p-4">
                       <p className="text-sm text-gray-600">Grid Export Revenue</p>
                       <p className="text-2xl font-bold text-green-600">
-                        £{(summary.total_grid_export_kwh * 0.15 / 100).toFixed(2)}
+                        £{formatNumber((summary?.total_grid_export_kwh || 0) * 0.15 / 100, 2)}
                       </p>
                     </div>
                     <div className="bg-white rounded-lg shadow p-4">
                       <p className="text-sm text-gray-600">Solar Generation</p>
                       <p className="text-2xl font-bold text-yellow-600">
-                        {summary.total_solar_kwh.toFixed(1)} kWh
+                        {formatNumber(summary?.total_solar_kwh, 1)} kWh
                       </p>
                     </div>
                     <div className="bg-white rounded-lg shadow p-4">
                       <p className="text-sm text-gray-600">Total Demand</p>
                       <p className="text-2xl font-bold text-purple-600">
-                        {summary.total_demand_kwh.toFixed(1)} kWh
+                        {formatNumber(summary?.total_demand_kwh, 1)} kWh
                       </p>
                     </div>
                   </div>
