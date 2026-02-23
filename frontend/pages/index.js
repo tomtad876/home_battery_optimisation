@@ -36,6 +36,7 @@ export default function Home() {
         batt_discharge_kwh: r.batt_discharge_kwh ?? r.batt_discharge ?? 0,
         grid_import_kwh: r.grid_import_kwh ?? r.grid_import ?? 0,
         grid_export_kwh: r.grid_export_kwh ?? r.grid_export ?? 0,
+        cost_gbp: r.cost_gbp ?? r.cost ?? 0,
       }))
       setSchedule(normalized)
     } catch (err) {

@@ -14,30 +14,26 @@ import {
 export default function ScheduleCharts({ schedule }) {
   if (!schedule || schedule.length === 0) return null
 
-  // Prepare data for charts - use hourly aggregation for readability
-  const hourlyData = []
-  for (let i = 0; i < schedule.length; i += 2) {
-    const period1 = schedule[i]
-    const period2 = i + 1 < schedule.length ? schedule[i + 1] : period1
-
-    const hour = new Date(period1.period_end).toLocaleTimeString('en-US', {
+  // Prepare data for charts at half-hourly resolution
+  const hourlyData = schedule.map((period) => {
+    const time = new Date(period.period_end).toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
     })
 
-    hourlyData.push({
-      time: hour,
-      pv_estimate: (period1.pv_estimate + (period2?.pv_estimate || 0)) / 2,
-      demand: (period1.demand + (period2?.demand || 0)) / 2,
-      price: (period1.price + (period2?.price || 0)) / 2,
-      soc_pct: period2?.soc_pct || period1.soc_pct,
-      batt_charge: (period1.batt_charge_kwh + (period2?.batt_charge_kwh || 0)) / 2,
-      batt_discharge: (period1.batt_discharge_kwh + (period2?.batt_discharge_kwh || 0)) / 2,
-      grid_import: (period1.grid_import_kwh + (period2?.grid_import_kwh || 0)) / 2,
-      grid_export: (period1.grid_export_kwh + (period2?.grid_export_kwh || 0)) / 2,
-    })
-  }
+    return {
+      time,
+      pv_estimate: Number(period.pv_estimate || 0),
+      demand: Number(period.demand || 0),
+      price: Number(period.price || 0),
+      soc_pct: Number(period.soc_pct || 0),
+      batt_charge: Number(period.batt_charge_kwh || 0),
+      batt_discharge: Number(period.batt_discharge_kwh || 0),
+      grid_import: Number(period.grid_import_kwh || 0),
+      grid_export: Number(period.grid_export_kwh || 0),
+    }
+  })
 
   return (
     <div className="space-y-8">
@@ -112,7 +108,11 @@ export default function ScheduleCharts({ schedule }) {
         <ResponsiveContainer width="100%" height={250}>
           <LineChart data={hourlyData.map((d, i) => ({
             ...d,
-            cumulative_cost: hourlyData.slice(0, i + 1).reduce((sum, x) => sum + (x.grid_import * x.price / 100 - x.grid_export * 15 / 100), 0)
+            // Prefer backend-provided per-timestep cost if available to match summary exactly
+            cumulative_cost: hourlyData.slice(0, i + 1).reduce((sum, x) => {
+              if (x.cost_gbp !== undefined) return sum + Number(x.cost_gbp)
+              return sum + (Number(x.grid_import || 0) * Number(x.price || 0) / 100 - Number(x.grid_export || 0) * 15 / 100)
+            }, 0)
           }))}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
