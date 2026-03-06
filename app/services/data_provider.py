@@ -55,6 +55,7 @@ def get_optimiser_inputs() -> pd.DataFrame:
             f.period_end as period_end,
             f.solar_kwh AS pv_estimate,
             ar.import_price as price,
+            ar.export_price,
             h.avg_kwh AS demand
         FROM future_half_hours f
         JOIN half_hour_history h
@@ -72,7 +73,7 @@ def get_optimiser_inputs() -> pd.DataFrame:
             rows = []
         df = pd.DataFrame(rows)
         if df.empty:
-            return pd.DataFrame(columns=["period_end", "pv_estimate", "price", "demand"]) 
+            return pd.DataFrame(columns=["period_end", "pv_estimate", "price", "export_price", "demand"]) 
 
         # Normalize column names and types
         # handle both tz-aware and tz-naive timestamps returned by the DB
@@ -83,9 +84,10 @@ def get_optimiser_inputs() -> pd.DataFrame:
         df["pv_estimate"] = df["pv_estimate"].astype(float)
         # price: may be NULL
         df["price"] = df["price"].astype(float)
+        df["export_price"] = df["export_price"].astype(float)
         # demand_forecast_kwh -> kWh for half-hour
         df["demand"] = df["demand"].astype(float) 
 
-        return df[["period_end", "pv_estimate", "price", "demand"]]
+        return df[["period_end", "pv_estimate", "price", "export_price", "demand"]]
     finally:
         session.close()

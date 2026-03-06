@@ -27,6 +27,7 @@ export default function ScheduleCharts({ schedule }) {
       pv_estimate: Number(period.pv_estimate || 0),
       demand: Number(period.demand || 0),
       price: Number(period.price || 0),
+      export_price: Number(period.export_price_pence ?? period.export_price ?? 0),
       soc_pct: Number(period.soc_pct || 0),
       batt_charge: Number(period.batt_charge_kwh || 0),
       batt_discharge: Number(period.batt_discharge_kwh || 0),
@@ -50,7 +51,8 @@ export default function ScheduleCharts({ schedule }) {
             <Legend />
             <Line yAxisId="left" type="monotone" dataKey="pv_estimate" stroke="#FBBF24" name="Solar (kWh)" strokeWidth={2} dot={false} />
             <Line yAxisId="left" type="monotone" dataKey="demand" stroke="#A78BFA" name="Demand (kWh)" strokeWidth={2} dot={false} />
-            <Line yAxisId="right" type="monotone" dataKey="price" stroke="#EF4444" name="Price (p/kWh)" strokeWidth={2} dot={false} />
+            <Line yAxisId="right" type="monotone" dataKey="price" stroke="#EF4444" name="Import Price (p/kWh)" strokeWidth={2} dot={false} />
+            <Line yAxisId="right" type="monotone" dataKey="export_price" stroke="#10B981" name="Export Price (p/kWh)" strokeWidth={2} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -111,7 +113,9 @@ export default function ScheduleCharts({ schedule }) {
             // Prefer backend-provided per-timestep cost if available to match summary exactly
             cumulative_cost: hourlyData.slice(0, i + 1).reduce((sum, x) => {
               if (x.cost_gbp !== undefined) return sum + Number(x.cost_gbp)
-              return sum + (Number(x.grid_import || 0) * Number(x.price || 0) / 100 - Number(x.grid_export || 0) * 15 / 100)
+              const importCost = Number(x.grid_import || 0) * (Number(x.price || 0) / 100)
+              const exportRevenue = Number(x.grid_export || 0) * (Number(x.export_price || 0) / 100)
+              return sum + (importCost - exportRevenue)
             }, 0)
           }))}>
             <CartesianGrid strokeDasharray="3 3" />

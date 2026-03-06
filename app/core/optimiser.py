@@ -63,7 +63,12 @@ def mvp_cost_minimiser(
     import_prices = inputs_df["price"].values / 100.0  # Convert pence to £/kWh
     solar_gen = inputs_df["pv_estimate"].values
     demand = inputs_df["demand"].values
-    export_price_gbp = export_price_pence / 100.0
+    # Expect a per-period export price column named `export_price` (pence/kWh)
+    if "export_price" not in inputs_df.columns:
+        raise ValueError("inputs_df must include an 'export_price' column with pence/kWh values")
+
+    export_prices_pence = inputs_df["export_price"].values
+    export_prices_gbp = export_prices_pence / 100.0
 
     # Battery and system parameters
     dt = 0.5  # half-hour in hours
@@ -110,7 +115,8 @@ def mvp_cost_minimiser(
     # Objective: minimise cost with small grid penalty
     grid_penalty_weight = 0.001
     penalty = grid_penalty_weight * cp.sum(g_import + g_export)
-    cost = cp.sum(cp.multiply(g_import, import_prices) - g_export * export_price_gbp) + penalty
+    # Use per-period export prices where available
+    cost = cp.sum(cp.multiply(g_import, import_prices) - cp.multiply(g_export, export_prices_gbp)) + penalty
     # Small incentive to charge in periods where future prices are higher
     try:
         future_max_price = float(import_prices.max())
@@ -127,7 +133,8 @@ def mvp_cost_minimiser(
         raise ValueError(f"Optimisation failed: {problem.status}")
 
     # Build results DataFrame
-    timestep_cost = g_import.value * import_prices - g_export.value * export_price_gbp
+    # Per-timestep cost (GBP)
+    timestep_cost = g_import.value * import_prices - g_export.value * export_prices_gbp
     soc_pct = (soc.value / battery_capacity_kwh) * 100
 
     result_df = inputs_df[["period_end"]].copy()
@@ -153,6 +160,8 @@ def mvp_cost_minimiser(
     result_df["net_battery_kwh"] = net_batt
     result_df["net_grid_kwh"] = net_grid
     result_df["cost_gbp"] = timestep_cost
+    # include export price used (pence/kWh) to make it available for downstream UI
+    result_df["export_price_pence"] = export_prices_pence
 
     return result_df
 
