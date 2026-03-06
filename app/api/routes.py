@@ -21,7 +21,7 @@ class MVPOptimiseRequest(BaseModel):
     max_soc_pct: float = 100.0
     charge_power_kw: float = 3.0
     discharge_power_kw: float = 3.0
-    export_price_pence: float = 15.0
+
 
 
 @router.post("/optimise/mvp")
@@ -48,25 +48,31 @@ def optimise_mvp(req: MVPOptimiseRequest):
             max_soc_pct=req.max_soc_pct,
             charge_power_kw=req.charge_power_kw,
             discharge_power_kw=req.discharge_power_kw,
-            export_price_pence=req.export_price_pence,
         )
 
         # Compute summary stats
-        total_cost = schedule["cost_gbp"].sum()
-        total_solar = schedule["pv_estimate"].sum()
-        total_demand = schedule["demand"].sum()
-        total_import = schedule["grid_import_kwh"].sum()
-        total_export = schedule["grid_export_kwh"].sum()
+        total_cost = float(schedule["cost_gbp"].sum())
+        total_solar = float(schedule["pv_estimate"].sum())
+        total_demand = float(schedule["demand"].sum())
+        total_import = float(schedule["grid_import_kwh"].sum())
+        total_export = float(schedule["grid_export_kwh"].sum())
+        # compute export revenue using per-timestep export price if provided
+        # Compute export revenue from per-timestep export price column (expected name: `export_price` in pence/kWh)
+        if "export_price" in schedule.columns:
+            total_export_revenue = float((schedule["grid_export_kwh"] * schedule["export_price"] / 100.0).sum())
+        else:
+            total_export_revenue = 0.0
 
         return {
             "status": "success",
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "summary": {
-                "total_cost_gbp": float(total_cost),
-                "total_pv_estimate_kwh": float(total_solar),
-                "total_demand_kwh": float(total_demand),
-                "total_grid_import_kwh": float(total_import),
-                "total_grid_export_kwh": float(total_export),
+                "total_cost_gbp": total_cost,
+                "total_solar_kwh": total_solar,
+                "total_demand_kwh": total_demand,
+                "total_grid_import_kwh": total_import,
+                "total_grid_export_kwh": total_export,
+                "total_grid_export_revenue_gbp": total_export_revenue,
             },
             "schedule": schedule.to_dict(orient="records"),
         }

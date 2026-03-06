@@ -37,6 +37,7 @@ export default function Home() {
         grid_import_kwh: r.grid_import_kwh ?? r.grid_import ?? 0,
         grid_export_kwh: r.grid_export_kwh ?? r.grid_export ?? 0,
         cost_gbp: r.cost_gbp ?? r.cost ?? 0,
+        export_price: r.export_price ?? r.export_price_pence ?? null,
       }))
       setSchedule(normalized)
     } catch (err) {
@@ -94,7 +95,7 @@ export default function Home() {
                     <div className="bg-white rounded-lg shadow p-4">
                       <p className="text-sm text-gray-600">Grid Export Revenue</p>
                       <p className="text-2xl font-bold text-green-600">
-                        £{formatNumber((summary?.total_grid_export_kwh || 0) * 0.15 / 100, 2)}
+                        £{formatNumber(summary?.total_grid_export_revenue_gbp ?? ((summary?.total_grid_export_kwh || 0) * 0.15 / 100), 2)}
                       </p>
                     </div>
                     <div className="bg-white rounded-lg shadow p-4">

@@ -8,7 +8,6 @@ export default function OptimiserForm({ onSubmit, loading }) {
     max_soc_pct: 100.0,
     charge_power_kw: 3.0,
     discharge_power_kw: 3.0,
-    export_price_pence: 15.0,
   })
 
   const handleChange = (e) => {
@@ -117,19 +116,7 @@ export default function OptimiserForm({ onSubmit, loading }) {
         </div>
       </div>
 
-      <div className="border-t pt-4">
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Export Price (p/kWh)
-        </label>
-        <input
-          type="number"
-          name="export_price_pence"
-          value={formData.export_price_pence}
-          onChange={handleChange}
-          step={0.5}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-        />
-      </div>
+      {/* Export price is provided by the backend Agile price feed; no frontend input required */}
 
       <button
         type="submit"
