@@ -132,7 +132,7 @@ def create_battery(site_id: str, capacity_kwh: float, max_charge_kw: float,
         import json
         result = session.execute(
             text("""INSERT INTO batteries (id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw, min_soc_pct, max_soc_pct, provider_type, provider_config)
-                    VALUES (gen_random_uuid(), :sid, :cap, :mch, :mdis, :minsoc, :maxsoc, :ptype, :pconf::json)
+                    VALUES (gen_random_uuid(), :sid, :cap, :mch, :mdis, :minsoc, :maxsoc, :ptype, CAST(:pconf AS json))
                     RETURNING id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw, min_soc_pct, max_soc_pct, provider_type"""),
             {"sid": site_id, "cap": capacity_kwh, "mch": max_charge_kw, "mdis": max_discharge_kw,
              "minsoc": min_soc_pct, "maxsoc": max_soc_pct, "ptype": provider_type,
@@ -152,7 +152,7 @@ def create_tariff(site_id: str, import_type: str, export_type: str, config_json:
         import json
         result = session.execute(
             text("""INSERT INTO tariffs (id, site_id, import_type, export_type, config_json)
-                    VALUES (gen_random_uuid(), :sid, :itype, :etype, :conf::json)
+                    VALUES (gen_random_uuid(), :sid, :itype, :etype, CAST(:conf AS json))
                     RETURNING id, site_id, import_type, export_type, config_json"""),
             {"sid": site_id, "itype": import_type, "etype": export_type,
              "conf": json.dumps(config_json or {})}
