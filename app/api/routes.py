@@ -7,7 +7,8 @@ from app.core.auth import verify_token
 from app.core.optimiser import mvp_cost_minimiser
 from app.services.data_provider import (
     get_optimiser_inputs, get_user_site, create_site,
-    create_battery, create_tariff, get_user_battery, update_battery_provider_config
+    create_battery, create_tariff, get_user_battery, update_battery_provider_config,
+    update_battery_config
 )
 
 router = APIRouter()
@@ -83,6 +84,27 @@ def post_battery(req: CreateBatteryRequest, user: dict = Depends(verify_token)):
         provider_config=req.provider_config,
     )
     return {"battery": battery}
+
+
+class UpdateBatteryRequest(BaseModel):
+    capacity_kwh: float | None = None
+    max_charge_kw: float | None = None
+    max_discharge_kw: float | None = None
+    min_soc_pct: float | None = None
+    max_soc_pct: float | None = None
+
+@router.put("/batteries/me")
+def put_my_battery(req: UpdateBatteryRequest, user: dict = Depends(verify_token)):
+    """Update the authenticated user's battery config."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    battery = get_user_battery(user_id)
+    if not battery:
+        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+    from app.services.data_provider import update_battery_config
+    updated = update_battery_config(battery["id"], req.model_dump(exclude_unset=True))
+    return {"battery": updated}
 
 
 @router.get("/batteries/me")

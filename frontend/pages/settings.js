@@ -17,6 +17,12 @@ export default function CredentialsSettings() {
   const [foxessApiKey, setFoxessApiKey] = useState('');
   const [foxessDeviceSn, setFoxessDeviceSn] = useState('');
 
+  const [capacityKwh, setCapacityKwh] = useState('13.5');
+  const [maxChargeKw, setMaxChargeKw] = useState('5.0');
+  const [maxDischargeKw, setMaxDischargeKw] = useState('5.0');
+  const [minSocPct, setMinSocPct] = useState('20');
+  const [maxSocPct, setMaxSocPct] = useState('100');
+
   useEffect(() => {
     loadCredentials();
   }, []);
@@ -74,6 +80,11 @@ export default function CredentialsSettings() {
         setSolcastSystemId(config.solcast_system_id || '');
         setFoxessApiKey(config.foxess_api_key || '');
         setFoxessDeviceSn(config.foxess_device_sn || '');
+        setCapacityKwh(String(data.battery?.capacity_kwh ?? '13.5'));
+        setMaxChargeKw(String(data.battery?.max_charge_kw ?? '5.0'));
+        setMaxDischargeKw(String(data.battery?.max_discharge_kw ?? '5.0'));
+        setMinSocPct(String(data.battery?.min_soc_pct ?? '20'));
+        setMaxSocPct(String(data.battery?.max_soc_pct ?? '100'));
       }
     } catch (e) {
       console.error('Failed to load credentials:', e);
@@ -91,25 +102,41 @@ export default function CredentialsSettings() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const body = {};
-      if (solcastApiKey) body.solcast_api_key = solcastApiKey;
-      if (solcastSystemId) body.solcast_system_id = solcastSystemId;
-      if (foxessApiKey) body.foxess_api_key = foxessApiKey;
-      if (foxessDeviceSn) body.foxess_device_sn = foxessDeviceSn;
+      const headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      };
 
-      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me/provider_config`, {
+      // Save battery config
+      const battResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify(body),
+        headers,
+        body: JSON.stringify({
+          capacity_kwh: parseFloat(capacityKwh) || 13.5,
+          max_charge_kw: parseFloat(maxChargeKw) || 5.0,
+          max_discharge_kw: parseFloat(maxDischargeKw) || 5.0,
+          min_soc_pct: parseFloat(minSocPct) || 20,
+          max_soc_pct: parseFloat(maxSocPct) || 100,
+        }),
       });
 
-      if (resp.ok) {
-        setMessage({ type: 'success', text: 'Credentials saved successfully.' });
+      // Save API credentials
+      const credBody = {};
+      if (solcastApiKey) credBody.solcast_api_key = solcastApiKey;
+      if (solcastSystemId) credBody.solcast_system_id = solcastSystemId;
+      if (foxessApiKey) credBody.foxess_api_key = foxessApiKey;
+      if (foxessDeviceSn) credBody.foxess_device_sn = foxessDeviceSn;
+
+      const credResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me/provider_config`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify(credBody),
+      });
+
+      if (battResp.ok && credResp.ok) {
+        setMessage({ type: 'success', text: 'Settings saved successfully.' });
       } else {
-        const err = await resp.json();
+        const err = await (battResp.ok ? credResp : battResp).json();
         setMessage({ type: 'error', text: err.detail || 'Failed to save.' });
       }
     } catch (e) {
@@ -149,7 +176,69 @@ export default function CredentialsSettings() {
         )}
 
         <form onSubmit={handleSave}>
-          <h2 style={styles.sectionTitle}>Solcast (Solar Forecast)</h2>
+          <h2 style={styles.sectionTitle}>Battery Configuration</h2>
+
+          <div style={styles.row}>
+            <div style={styles.halfField}>
+              <label style={styles.label}>Capacity (kWh)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={capacityKwh}
+                onChange={(e) => setCapacityKwh(e.target.value)}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.halfField}>
+              <label style={styles.label}>Max Charge (kW)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={maxChargeKw}
+                onChange={(e) => setMaxChargeKw(e.target.value)}
+                style={styles.input}
+              />
+            </div>
+          </div>
+
+          <div style={styles.row}>
+            <div style={styles.halfField}>
+              <label style={styles.label}>Max Discharge (kW)</label>
+              <input
+                type="number"
+                step="0.1"
+                value={maxDischargeKw}
+                onChange={(e) => setMaxDischargeKw(e.target.value)}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.halfField}>
+              <label style={styles.label}>Min SOC (%)</label>
+              <input
+                type="number"
+                step="1"
+                value={minSocPct}
+                onChange={(e) => setMinSocPct(e.target.value)}
+                style={styles.input}
+              />
+            </div>
+          </div>
+
+          <div style={styles.row}>
+            <div style={styles.halfField}>
+              <label style={styles.label}>Max SOC (%)</label>
+              <input
+                type="number"
+                step="1"
+                value={maxSocPct}
+                onChange={(e) => setMaxSocPct(e.target.value)}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.halfField} />
+          </div>
+
+          <h2 style={styles.sectionTitle}>API Credentials</h2>
 
           <label style={styles.label}>API Key</label>
           <input
@@ -293,5 +382,12 @@ const styles = {
   loading: {
     textAlign: 'center',
     color: '#64748b',
+  },
+  row: {
+    display: 'flex',
+    gap: '12px',
+  },
+  halfField: {
+    flex: 1,
   },
 };

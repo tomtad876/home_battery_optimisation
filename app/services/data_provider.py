@@ -240,3 +240,42 @@ def update_battery_provider_config(battery_id: str, provider_config: dict) -> di
         return d
     finally:
         session.close()
+
+
+def update_battery_config(battery_id: str, updates: dict) -> dict:
+    """Update battery config fields (capacity, power, SOC limits)."""
+    session = SessionLocal()
+    try:
+        allowed = {"capacity_kwh", "max_charge_kw", "max_discharge_kw", "min_soc_pct", "max_soc_pct"}
+        fields = {k: v for k, v in updates.items() if k in allowed and v is not None}
+        if not fields:
+            return None
+
+        set_parts = [f"{k} = :{k}" for k in fields]
+        sql = text(f"""UPDATE batteries
+                       SET {', '.join(set_parts)}
+                       WHERE id = :bid
+                       RETURNING id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw,
+                                 min_soc_pct, max_soc_pct, provider_type, provider_config""")
+        params = {"bid": battery_id, **fields}
+        result = session.execute(sql, params)
+        row = result.mappings().first()
+        session.commit()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("id"):
+            d["id"] = str(d["id"])
+        if d.get("site_id"):
+            d["site_id"] = str(d["site_id"])
+        raw = d.get("provider_config")
+        if isinstance(raw, str):
+            import json
+            raw = json.loads(raw)
+        if isinstance(raw, dict) and "encrypted" in raw:
+            d["provider_config"] = decrypt_provider_config(raw["encrypted"])
+        else:
+            d["provider_config"] = raw or {}
+        return d
+    finally:
+        session.close()
