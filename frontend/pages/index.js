@@ -58,7 +58,7 @@ export default function Home() {
       if (!response.ok) {
         const errorData = await response.json()
         const msg = errorData.detail || 'Optimisation failed'
-        if (msg.startsWith('NO_DATA:')) {
+        if (msg.includes('NO_DATA')) {
           throw new Error('no_data')
         }
         throw new Error(msg)
