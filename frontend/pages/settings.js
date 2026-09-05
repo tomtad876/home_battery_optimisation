@@ -28,9 +28,43 @@ export default function CredentialsSettings() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me`, {
+      let resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me`, {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
+
+      // If no battery exists, create a default one
+      if (resp.status === 404) {
+        const siteResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/sites/me`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (!siteResp.ok) {
+          setMessage({ type: 'error', text: 'No site found. Please complete the setup wizard first.' });
+          return;
+        }
+        const siteData = await siteResp.json();
+        const createResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            site_id: siteData.site.id,
+            capacity_kwh: 13.5,
+            max_charge_kw: 5.0,
+            max_discharge_kw: 5.0,
+            min_soc_pct: 20.0,
+            max_soc_pct: 100.0,
+            provider_type: 'foxess',
+            provider_config: {},
+          }),
+        });
+        if (createResp.ok) {
+          resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          });
+        }
+      }
 
       if (resp.ok) {
         const data = await resp.json();
