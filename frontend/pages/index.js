@@ -1,22 +1,31 @@
 import Head from 'next/head'
 import OptimiserForm from '@/components/OptimiserForm'
 import ScheduleCharts from '@/components/ScheduleCharts'
+import AuthForm from '@/components/AuthForm'
+import { supabase } from '@/lib/supabaseClient'
 import { useState } from 'react'
+import { useEffect } from 'react'
 
 export default function Home() {
   const [schedule, setSchedule] = useState(null)
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [user, setUser] = useState(null)
 
   const handleOptimise = async (params) => {
     setLoading(true)
     setError(null)
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+      const { data: { session } } = await supabase.auth.getSession()
+      const headers = { 'Content-Type': 'application/json' }
+      if (session?.access_token) {
+        headers['Authorization'] = `Bearer ${session.access_token}`
+      }
       const response = await fetch(`${apiUrl}/optimise/mvp`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(params),
       })
       if (!response.ok) {
@@ -47,6 +56,27 @@ export default function Home() {
     }
   }
 
+  useEffect(() => {
+    let mounted = true
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) setUser(data?.session?.user ?? null)
+    })
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (mounted) setUser(session?.user ?? null)
+    })
+
+    return () => {
+      mounted = false
+      listener?.subscription?.unsubscribe && listener.subscription.unsubscribe()
+    }
+  }, [])
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+  }
+
   const formatNumber = (v, decimals) => {
     if (v === undefined || v === null || Number.isNaN(Number(v))) return (0).toFixed(decimals)
     return Number(v).toFixed(decimals)
@@ -70,7 +100,21 @@ export default function Home() {
             {/* Form Panel */}
             <div className="lg:col-span-1">
               <div className="bg-white rounded-lg shadow p-6 sticky top-4">
-                <OptimiserForm onSubmit={handleOptimise} loading={loading} />
+                {!user ? (
+                  <AuthForm onLogin={() => setUser(supabase.auth.getUser())} />
+                ) : (
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-sm text-gray-600">Signed in as</p>
+                      <p className="font-medium">{user?.email}</p>
+                    </div>
+                    <div>
+                      <button onClick={handleLogout} className="bg-red-600 text-white px-3 py-2 rounded">Sign out</button>
+                    </div>
+                    <hr />
+                    <OptimiserForm onSubmit={handleOptimise} loading={loading} />
+                  </div>
+                )}
               </div>
             </div>
 

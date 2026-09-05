@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 import os
 from datetime import datetime, timezone
 from pydantic import BaseModel
 
+from app.core.auth import verify_token
 from app.core.optimiser import mvp_cost_minimiser
 from app.services.data_provider import get_optimiser_inputs
 
@@ -25,7 +26,7 @@ class MVPOptimiseRequest(BaseModel):
 
 
 @router.post("/optimise/mvp")
-def optimise_mvp(req: MVPOptimiseRequest):
+def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
     """
     MVP optimiser endpoint: compute optimal battery dispatch schedule for lowest cost.
     Uses linear programming (CVXPY) to minimise electricity costs over forecast horizon.
