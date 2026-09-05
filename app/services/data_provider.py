@@ -300,22 +300,31 @@ def _foxess_ts_to_iso(ts_str: str) -> str:
 def get_battery_realtime(user_id: str) -> dict:
     """Fetch real-time SOC and last 4 hours of history from FoxESS.
 
-    Returns {soc_pct: float|None, history: [{time, soc_pct, charge_kw, discharge_kw, grid_import_kw}]}
+    Returns {soc_pct: float|None, history: [...], error?: str}.
+    `error` is included when credentials are missing/unreadable or a FoxESS
+    call fails, so failures don't silently masquerade as "no live data".
     """
     import hashlib
     import time as _time
     import requests
 
-    battery = get_user_battery(user_id)
+    try:
+        battery = get_user_battery(user_id)
+    except ValueError as exc:
+        return {"soc_pct": None, "history": [], "error": str(exc)}
     if not battery:
-        return {"soc_pct": None, "history": []}
+        return {"soc_pct": None, "history": [], "error": "No battery found. Complete setup first."}
 
     config = battery.get("provider_config") or {}
     foxess_key = config.get("foxess_api_key")
     device_sn = config.get("foxess_device_sn")
 
     if not foxess_key or not device_sn:
-        return {"soc_pct": None, "history": []}
+        return {
+            "soc_pct": None,
+            "history": [],
+            "error": "FoxESS API credentials not configured. Add them in Settings.",
+        }
 
     base_url = "https://www.foxesscloud.com"
     headers_base = {"Content-Type": "application/json", "lang": "en"}
@@ -326,6 +335,7 @@ def get_battery_realtime(user_id: str) -> dict:
 
     soc_pct = None
     history = []
+    errors = []
 
     # 1. Real-time SOC
     try:
@@ -343,8 +353,10 @@ def get_battery_realtime(user_id: str) -> dict:
                 if entry.get("variable") == "SoC":
                     soc_pct = float(entry.get("value", 0))
                     break
-    except Exception:
-        pass
+        else:
+            errors.append(f"FoxESS SOC query failed (HTTP {resp.status_code})")
+    except Exception as exc:
+        errors.append(f"FoxESS SOC query error: {exc}")
 
     # 2. History: last 4 hours, aggregated to 30-min buckets
     try:
@@ -506,7 +518,12 @@ def get_battery_realtime(user_id: str) -> dict:
                         session.close()
                 except Exception:
                     pass
-    except Exception:
-        pass
+        else:
+            errors.append(f"FoxESS history query failed (HTTP {resp.status_code})")
+    except Exception as exc:
+        errors.append(f"FoxESS history query error: {exc}")
 
-    return {"soc_pct": soc_pct, "history": history}
+    result = {"soc_pct": soc_pct, "history": history}
+    if errors:
+        result["error"] = "; ".join(errors)
+    return result

@@ -3,6 +3,8 @@ import pytest
 import pandas as pd
 from unittest.mock import patch, MagicMock
 from app.services import solcast, foxess, forecast
+from app.services.data_provider import get_battery_realtime
+from app.core import encryption as enc_module
 
 
 class TestSolcast:
@@ -124,4 +126,66 @@ class TestForecast:
         
         with pytest.raises(ValueError, match="FoxESS API key"):
             forecast.forecast_solar_and_prices("test_id")
+
+
+class TestEncryptionHardening:
+    """decrypt_provider_config should surface decrypt failures, not hide them."""
+
+    def test_decrypt_raises_on_key_mismatch(self):
+        """A Fernet token that can't be decrypted must raise, not return {}."""
+        import os
+        from cryptography.fernet import Fernet
+
+        key_a = Fernet.generate_key().decode()
+        key_b = Fernet.generate_key().decode()
+
+        os.environ["PROVIDER_CONFIG_ENCRYPTION_KEY"] = key_a
+        enc_module._fernet = None
+        token = enc_module.encrypt_provider_config({"foxess_api_key": "abc"})
+
+        os.environ["PROVIDER_CONFIG_ENCRYPTION_KEY"] = key_b
+        enc_module._fernet = None
+        with pytest.raises(ValueError, match="PROVIDER_CONFIG_ENCRYPTION_KEY"):
+            enc_module.decrypt_provider_config(token)
+
+    def test_decrypt_legacy_plaintext_returns_as_is(self):
+        """Non-Fernet (legacy) JSON config is still returned as-is."""
+        assert enc_module.decrypt_provider_config('{"foxess_api_key":"abc"}') == {"foxess_api_key": "abc"}
+
+    def test_decrypt_empty_token_returns_empty(self):
+        assert enc_module.decrypt_provider_config("") == {}
+        assert enc_module.decrypt_provider_config("{}") == {}
+
+
+class TestBatteryRealtime:
+    """get_battery_realtime should surface failures instead of silent nulls."""
+
+    @patch('app.services.data_provider.get_user_battery')
+    def test_realtime_surfaces_decrypt_failure(self, mock_battery):
+        mock_battery.side_effect = ValueError("Cannot decrypt stored API credentials")
+        result = get_battery_realtime("uid")
+        assert result["soc_pct"] is None
+        assert "error" in result
+        assert "Cannot decrypt" in result["error"]
+
+    @patch('requests.post')
+    @patch('app.services.data_provider.get_user_battery')
+    def test_realtime_surfaces_foxess_failure(self, mock_battery, mock_post):
+        mock_battery.return_value = {
+            "id": "b1",
+            "provider_config": {"foxess_api_key": "key", "foxess_device_sn": "sn"},
+        }
+        mock_post.return_value.ok = False
+        mock_post.return_value.status_code = 401
+        result = get_battery_realtime("uid")
+        assert result["soc_pct"] is None
+        assert "error" in result
+        assert "401" in result["error"]
+
+    @patch('app.services.data_provider.get_user_battery')
+    def test_realtime_missing_creds_is_explicit(self, mock_battery):
+        mock_battery.return_value = {"id": "b1", "provider_config": {}}
+        result = get_battery_realtime("uid")
+        assert result["soc_pct"] is None
+        assert "FoxESS API credentials not configured" in result["error"]
 

@@ -93,17 +93,28 @@ class UpdateBatteryRequest(BaseModel):
     min_soc_pct: float | None = None
     max_soc_pct: float | None = None
 
+def _get_battery_for_user(user_id: str) -> dict:
+    """Return the user's battery, mapping credential/decrypt failures to HTTP errors."""
+    try:
+        battery = get_user_battery(user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Battery credentials error: {exc}") from exc
+    if not battery:
+        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+    return battery
+
 @router.put("/batteries/me")
 def put_my_battery(req: UpdateBatteryRequest, user: dict = Depends(verify_token)):
     """Update the authenticated user's battery config."""
     user_id = user.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token: no user sub")
-    battery = get_user_battery(user_id)
-    if not battery:
-        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+    battery = _get_battery_for_user(user_id)
     from app.services.data_provider import update_battery_config
-    updated = update_battery_config(battery["id"], req.model_dump(exclude_unset=True))
+    try:
+        updated = update_battery_config(battery["id"], req.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Battery credentials error: {exc}") from exc
     return {"battery": updated}
 
 
@@ -113,9 +124,7 @@ def get_my_battery(user: dict = Depends(verify_token)):
     user_id = user.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token: no user sub")
-    battery = get_user_battery(user_id)
-    if not battery:
-        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+    battery = _get_battery_for_user(user_id)
     return {"battery": battery}
 
 
@@ -131,9 +140,7 @@ def put_provider_config(req: UpdateProviderConfigRequest, user: dict = Depends(v
     user_id = user.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token: no user sub")
-    battery = get_user_battery(user_id)
-    if not battery:
-        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+    battery = _get_battery_for_user(user_id)
 
     # Merge with existing config
     existing = battery.get("provider_config") or {}
@@ -143,7 +150,10 @@ def put_provider_config(req: UpdateProviderConfigRequest, user: dict = Depends(v
     # Remove keys with empty strings
     merged = {k: v for k, v in merged.items() if v is not None and v != ""}
 
-    updated = update_battery_provider_config(str(battery["id"]), merged)
+    try:
+        updated = update_battery_provider_config(str(battery["id"]), merged)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"Battery credentials error: {exc}") from exc
     return {"battery": updated}
 
 

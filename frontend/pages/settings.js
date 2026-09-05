@@ -80,6 +80,9 @@ export default function CredentialsSettings() {
         setMaxDischargeKw(String(data.battery?.max_discharge_kw ?? '5.0'));
         setMinSocPct(String(data.battery?.min_soc_pct ?? '20'));
         setMaxSocPct(String(data.battery?.max_soc_pct ?? '100'));
+      } else {
+        const err = await resp.json().catch(() => ({}));
+        setMessage({ type: 'error', text: err.detail || 'Failed to load credentials.' });
       }
     } catch (e) {
       console.error('Failed to load credentials:', e);

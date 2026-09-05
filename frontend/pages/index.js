@@ -239,6 +239,13 @@ export default function Home() {
 
                 {/* Results Panel */}
                 <div className="lg:col-span-3">
+                  {realtimeData.error && (
+                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+                      <p className="text-yellow-800"><strong>Live battery data unavailable:</strong> {realtimeData.error}</p>
+                      <p className="text-yellow-700 text-sm mt-1">You can still optimise manually using the form.</p>
+                    </div>
+                  )}
+
                   {error === 'no_data' ? (
                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6">
                       <h3 className="text-amber-800 font-semibold mb-2">No forecast data yet</h3>

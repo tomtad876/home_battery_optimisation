@@ -28,19 +28,31 @@ def encrypt_provider_config(config: dict) -> str:
 
 
 def decrypt_provider_config(token: str) -> dict:
-    """Decrypt a Fernet token string back to a provider_config dict."""
+    """Decrypt a Fernet token string back to a provider_config dict.
+
+    Raises ValueError if the token is Fernet-encrypted but cannot be decrypted
+    (e.g. PROVIDER_CONFIG_ENCRYPTION_KEY changed since the credentials were
+    saved). Legacy unencrypted JSON is returned as-is.
+    """
     import json
     if not token or token == "{}":
         return {}
-    try:
-        plaintext = _get_fernet().decrypt(token.encode() if isinstance(token, str) else token)
-        return json.loads(plaintext)
-    except Exception:
-        # If decryption fails, it might be unencrypted legacy data — return as-is
+    if is_encrypted(token):
         try:
-            return json.loads(token)
-        except Exception:
-            return {}
+            plaintext = _get_fernet().decrypt(token.encode() if isinstance(token, str) else token)
+            return json.loads(plaintext)
+        except Exception as exc:
+            raise ValueError(
+                "Cannot decrypt stored API credentials — the server's "
+                "PROVIDER_CONFIG_ENCRYPTION_KEY does not match the key used "
+                "when they were saved. Re-save credentials in Settings, or "
+                "fix the server encryption key."
+            ) from exc
+    # Legacy unencrypted JSON — return as-is
+    try:
+        return json.loads(token)
+    except Exception:
+        return {}
 
 
 def is_encrypted(token: str) -> bool:
