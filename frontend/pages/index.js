@@ -57,7 +57,11 @@ export default function Home() {
       })
       if (!response.ok) {
         const errorData = await response.json()
-        throw new Error(errorData.detail || 'Optimisation failed')
+        const msg = errorData.detail || 'Optimisation failed'
+        if (msg.startsWith('NO_DATA:')) {
+          throw new Error('no_data')
+        }
+        throw new Error(msg)
       }
       const data = await response.json()
       setSummary(data.summary)
@@ -189,11 +193,22 @@ export default function Home() {
 
                 {/* Results Panel */}
                 <div className="lg:col-span-3">
-                  {error && (
+                  {error === 'no_data' ? (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6">
+                      <h3 className="text-amber-800 font-semibold mb-2">No forecast data yet</h3>
+                      <p className="text-amber-700 mb-3">
+                        We need your solar forecast and energy usage data to generate an optimisation schedule.
+                      </p>
+                      <p className="text-amber-600 text-sm">
+                        Make sure your Solcast API key, Solcast PV System ID, and FoxESS API key are configured.
+                        Data is fetched daily by our background services — it may take up to 24 hours after first setup.
+                      </p>
+                    </div>
+                  ) : error ? (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
                       <p className="text-red-800"><strong>Error:</strong> {error}</p>
                     </div>
-                  )}
+                  ) : null}
 
                   {summary && schedule && (
                     <>

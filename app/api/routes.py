@@ -141,6 +141,12 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
 
     try:
         inputs = get_optimiser_inputs(str(site["id"]))
+
+        if inputs.empty:
+            raise HTTPException(
+                status_code=400,
+                detail="NO_DATA: No forecast data available yet. This usually means your Solcast and FoxESS API credentials haven't been configured. Please add them in your site settings."
+            )
     
         schedule = mvp_cost_minimiser(
             inputs_df=inputs,
