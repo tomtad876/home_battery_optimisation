@@ -14,8 +14,7 @@ def mvp_cost_minimiser(
     min_soc_pct: float = 20.0,
     max_soc_pct: float = 90.0,
     charge_power_kw: float = 3.0,
-    discharge_power_kw: float = 3.0,
-    export_price_pence: float = 15.0,
+    discharge_power_kw: float = 3.0
 ) -> pd.DataFrame:
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.

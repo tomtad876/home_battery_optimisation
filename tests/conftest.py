@@ -13,7 +13,7 @@ def sample_solar_df():
         # Simple curve: low at night, peak at midday
         hour = period.hour + period.minute / 60
         pv_estimate = max(0, 3 * (1 - abs(hour - 12) / 12) ** 2)  # kWh
-        data.append({"PeriodEnd": period, "PvEstimate": pv_estimate})
+        data.append({"period_end": period, "pv_estimate": pv_estimate})
     return pd.DataFrame(data)
 
 
@@ -26,7 +26,7 @@ def sample_prices_df():
         # Vary prices: low at night (10p), mid-day high (50p)
         hour = period.hour + period.minute / 60
         price = 25 + 20 * (1 - abs(hour - 12) / 12) ** 2  # pence
-        data.append({"PeriodEnd": period, "price": price})
+        data.append({"period_end": period, "price": price, "export_price": price * 0.4})
     return pd.DataFrame(data)
 
 
@@ -53,5 +53,4 @@ def optimiser_params():
         "max_soc_pct": 90.0,
         "charge_power_kw": 3.0,
         "discharge_power_kw": 3.0,
-        "export_price_pence": 15.0,
     }

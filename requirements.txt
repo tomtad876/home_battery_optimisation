@@ -10,6 +10,8 @@ requests
 numpy
 foxesscloud
 cvxpy
+PyJWT[crypto]
+cryptography
 pytest
 pytest-asyncio
 matplotlib

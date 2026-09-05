@@ -5,20 +5,21 @@ import pandas as pd
 from sqlalchemy import text
 
 from app.core.database import SessionLocal
+from app.core.encryption import encrypt_provider_config, decrypt_provider_config
 
 
-def get_optimiser_inputs() -> pd.DataFrame:
+def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
     """Return a merged half-hourly DataFrame for the optimiser.
 
     Columns returned:
-      - PeriodEnd: timezone-aware UTC timestamp (half-hour resolution)
-      - PvEstimate: solar energy in kWh for the half-hour
+      - period_end: timezone-aware UTC timestamp (half-hour resolution)
+      - pv_estimate: solar energy in kWh for the half-hour
       - price: import price (pence)
       - demand: demand energy in kWh for the half-hour
 
-    The function builds a half-hour series for the last `days` days, left-joins
+    The function builds a half-hour series for the last 7 days, left-joins
     `solcast_forecast`, `agile_rates`, and an aggregated view of
-    `historic_energy_data` (5-minute -> half-hour), and returns a tidy DataFrame.
+    `historic_energy_data` (5-minute -> half-hour), filtered by site_id.
     """
     session = SessionLocal()
     try:
@@ -29,6 +30,7 @@ def get_optimiser_inputs() -> pd.DataFrame:
             FROM public.historic_energy_data
             WHERE variable = 'loadsPower'
             AND period_end >= now() - interval '7 days'
+            AND site_id = :site_id
             GROUP BY period_end
         ),
 
@@ -49,6 +51,7 @@ def get_optimiser_inputs() -> pd.DataFrame:
                     + date_part('minute', sf.period_end) / 30) AS hh_slot
             FROM solcast_forecast sf
             WHERE sf.period_end >= now()
+            AND sf.site_id = :site_id
         )
 
         SELECT
@@ -64,7 +67,7 @@ def get_optimiser_inputs() -> pd.DataFrame:
             ON ar.period_end = f.period_end
         ORDER BY f.period_end;
         """)
-        result = session.execute(sql)
+        result = session.execute(sql, {"site_id": site_id})
         # Use SQLAlchemy result mappings for robust dict conversion
         try:
             mapped = result.mappings().all()
@@ -89,5 +92,190 @@ def get_optimiser_inputs() -> pd.DataFrame:
         df["demand"] = df["demand"].astype(float) 
 
         return df[["period_end", "pv_estimate", "price", "export_price", "demand"]]
+    finally:
+        session.close()
+
+
+def get_user_site(user_id: str) -> dict | None:
+    """Look up the user's site by their auth UID. Returns dict with id, name, timezone or None."""
+    session = SessionLocal()
+    try:
+        result = session.execute(
+            text("SELECT id, name, timezone FROM sites WHERE user_id = :uid LIMIT 1"),
+            {"uid": user_id}
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+    finally:
+        session.close()
+
+
+def create_site(user_id: str, name: str, timezone: str = "Europe/London") -> dict:
+    """Create a new site for a user. Returns the created site dict."""
+    session = SessionLocal()
+    try:
+        result = session.execute(
+            text("INSERT INTO sites (id, name, timezone, user_id) VALUES (gen_random_uuid(), :name, :tz, :uid) RETURNING id, name, timezone"),
+            {"name": name, "tz": timezone, "uid": user_id}
+        )
+        row = result.mappings().first()
+        session.commit()
+        return dict(row)
+    finally:
+        session.close()
+
+
+def create_battery(site_id: str, capacity_kwh: float, max_charge_kw: float,
+                   max_discharge_kw: float, min_soc_pct: float, max_soc_pct: float,
+                   provider_type: str, provider_config: dict | None = None) -> dict:
+    """Create a battery config for a site."""
+    session = SessionLocal()
+    try:
+        import json
+        encrypted = encrypt_provider_config(provider_config or {})
+        result = session.execute(
+            text("""INSERT INTO batteries (id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw, min_soc_pct, max_soc_pct, provider_type, provider_config)
+                    VALUES (gen_random_uuid(), :sid, :cap, :mch, :mdis, :minsoc, :maxsoc, :ptype, CAST(:pconf AS json))
+                    RETURNING id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw, min_soc_pct, max_soc_pct, provider_type"""),
+            {"sid": site_id, "cap": capacity_kwh, "mch": max_charge_kw, "mdis": max_discharge_kw,
+             "minsoc": min_soc_pct, "maxsoc": max_soc_pct, "ptype": provider_type,
+             "pconf": json.dumps({"encrypted": encrypted})}
+        )
+        row = result.mappings().first()
+        session.commit()
+        return dict(row)
+    finally:
+        session.close()
+
+
+def create_tariff(site_id: str, import_type: str, export_type: str, config_json: dict | None = None) -> dict:
+    """Create a tariff config for a site."""
+    session = SessionLocal()
+    try:
+        import json
+        result = session.execute(
+            text("""INSERT INTO tariffs (id, site_id, import_type, export_type, config_json)
+                    VALUES (gen_random_uuid(), :sid, :itype, :etype, CAST(:conf AS json))
+                    RETURNING id, site_id, import_type, export_type, config_json"""),
+            {"sid": site_id, "itype": import_type, "etype": export_type,
+             "conf": json.dumps(config_json or {})}
+        )
+        row = result.mappings().first()
+        session.commit()
+        return dict(row)
+    finally:
+        session.close()
+
+
+def get_user_battery(user_id: str) -> dict | None:
+    """Return the user's battery as a dict, or None."""
+    session = SessionLocal()
+    try:
+        result = session.execute(
+            text("""SELECT b.id, b.site_id, b.capacity_kwh, b.max_charge_kw,
+                           b.max_discharge_kw, b.min_soc_pct, b.max_soc_pct,
+                           b.provider_type, b.provider_config
+                    FROM batteries b
+                    JOIN sites s ON s.id = b.site_id
+                    WHERE s.user_id = :uid
+                    LIMIT 1"""),
+            {"uid": user_id}
+        )
+        row = result.mappings().first()
+        if not row:
+            return None
+        d = dict(row)
+        # Convert UUIDs to strings for JSON serialization
+        if d.get("id"):
+            d["id"] = str(d["id"])
+        if d.get("site_id"):
+            d["site_id"] = str(d["site_id"])
+        # Parse and decrypt provider_config
+        raw = d.get("provider_config")
+        if isinstance(raw, str):
+            import json
+            raw = json.loads(raw)
+        if isinstance(raw, dict) and "encrypted" in raw:
+            d["provider_config"] = decrypt_provider_config(raw["encrypted"])
+        elif isinstance(raw, dict):
+            # Legacy unencrypted — return as-is
+            d["provider_config"] = raw
+        else:
+            d["provider_config"] = {}
+        return d
+    finally:
+        session.close()
+
+
+def update_battery_provider_config(battery_id: str, provider_config: dict) -> dict:
+    """Update the provider_config JSON column for a battery (encrypted)."""
+    session = SessionLocal()
+    try:
+        import json
+        encrypted = encrypt_provider_config(provider_config)
+        result = session.execute(
+            text("""UPDATE batteries
+                    SET provider_config = CAST(:pconf AS json)
+                    WHERE id = :bid
+                    RETURNING id, site_id, provider_type, provider_config"""),
+            {"bid": battery_id, "pconf": json.dumps({"encrypted": encrypted})}
+        )
+        row = result.mappings().first()
+        session.commit()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("id"):
+            d["id"] = str(d["id"])
+        if d.get("site_id"):
+            d["site_id"] = str(d["site_id"])
+        # Decrypt on return
+        raw = d.get("provider_config")
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        if isinstance(raw, dict) and "encrypted" in raw:
+            d["provider_config"] = decrypt_provider_config(raw["encrypted"])
+        else:
+            d["provider_config"] = raw or {}
+        return d
+    finally:
+        session.close()
+
+
+def update_battery_config(battery_id: str, updates: dict) -> dict:
+    """Update battery config fields (capacity, power, SOC limits)."""
+    session = SessionLocal()
+    try:
+        allowed = {"capacity_kwh", "max_charge_kw", "max_discharge_kw", "min_soc_pct", "max_soc_pct"}
+        fields = {k: v for k, v in updates.items() if k in allowed and v is not None}
+        if not fields:
+            return None
+
+        set_parts = [f"{k} = :{k}" for k in fields]
+        sql = text(f"""UPDATE batteries
+                       SET {', '.join(set_parts)}
+                       WHERE id = :bid
+                       RETURNING id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw,
+                                 min_soc_pct, max_soc_pct, provider_type, provider_config""")
+        params = {"bid": battery_id, **fields}
+        result = session.execute(sql, params)
+        row = result.mappings().first()
+        session.commit()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("id"):
+            d["id"] = str(d["id"])
+        if d.get("site_id"):
+            d["site_id"] = str(d["site_id"])
+        raw = d.get("provider_config")
+        if isinstance(raw, str):
+            import json
+            raw = json.loads(raw)
+        if isinstance(raw, dict) and "encrypted" in raw:
+            d["provider_config"] = decrypt_provider_config(raw["encrypted"])
+        else:
+            d["provider_config"] = raw or {}
+        return d
     finally:
         session.close()

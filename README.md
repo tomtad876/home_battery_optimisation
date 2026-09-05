@@ -93,8 +93,7 @@ Optimise battery dispatch schedule for lowest cost over 24-48 hours.
   "min_soc_pct": 20.0,
   "max_soc_pct": 90.0,
   "charge_power_kw": 3.0,
-  "discharge_power_kw": 3.0,
-  "export_price_pence": 15.0
+  "discharge_power_kw": 3.0
 }
 ```
 
@@ -200,7 +199,7 @@ home_battery_optimisation/
 
 ## MVP Scope
 
-- ✅ **Tariff:** Octopus Agile import + 15p flat export
+- ✅ **Tariff:** Octopus Agile import + Octopus Agile export
 - ✅ **Solar:** Solcast 30-min forecasts
 - ✅ **Demand:** FoxESS 7-day average (time-of-day profile)
 - ✅ **Optimisation:** Linear programming (global optimum, not greedy)
@@ -210,7 +209,7 @@ home_battery_optimisation/
 ## Known Limitations
 
 - **Demand forecast:** Simple 7-day average. Upgrade to ML (Prophet, LSTM) for better accuracy
-- **Tariff:** Hardcoded 15p export. No support for Economy 7 or dynamic peak/off-peak yet
+- **Tariff:** No support for Economy 7 or other non-Agile tariff structures yet
 - **Optimiser:** No battery health degradation or thermal constraints
 - **No V2G:** Vehicle-to-grid not supported (future feature)
 
