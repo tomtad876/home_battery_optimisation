@@ -30,7 +30,7 @@ serve(async (req: Request) => {
     const errors: string[] = [];
 
     for (const battery of batteries) {
-      const config = decryptProviderConfig(battery.provider_config, encryptionKey);
+      const config = await decryptProviderConfig(battery.provider_config, encryptionKey);
       const solcastKey = config?.solcast_api_key;
       const pvSystemId = config?.solcast_system_id;
 

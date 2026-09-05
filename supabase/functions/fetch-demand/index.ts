@@ -31,7 +31,7 @@ serve(async (req: Request) => {
     const errors: string[] = [];
 
     for (const battery of batteries) {
-      const config = decryptProviderConfig(battery.provider_config, encryptionKey);
+      const config = await decryptProviderConfig(battery.provider_config, encryptionKey);
       const foxessKey = config?.foxess_api_key;
       const deviceSn = config?.foxess_device_sn;
 
