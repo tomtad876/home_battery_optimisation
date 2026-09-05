@@ -1,14 +1,20 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
-export default function OptimiserForm({ onSubmit, loading }) {
+export default function OptimiserForm({ onSubmit, loading, defaultSoc }) {
   const [formData, setFormData] = useState({
     battery_capacity_kwh: 5.0,
-    initial_soc_pct: 50.0,
+    initial_soc_pct: null,
     min_soc_pct: 20.0,
     max_soc_pct: 100.0,
     charge_power_kw: 3.0,
     discharge_power_kw: 3.0,
   })
+
+  useEffect(() => {
+    if (defaultSoc !== null && defaultSoc !== undefined) {
+      setFormData((prev) => ({ ...prev, initial_soc_pct: defaultSoc }))
+    }
+  }, [defaultSoc])
 
   const handleChange = (e) => {
     const { name, value } = e.target

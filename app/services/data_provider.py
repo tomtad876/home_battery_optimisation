@@ -50,7 +50,7 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
                 floor(date_part('hour', sf.period_end) * 2 
                     + date_part('minute', sf.period_end) / 30) AS hh_slot
             FROM solcast_forecast sf
-            WHERE sf.period_end >= now()
+            WHERE sf.period_end > now() - interval '30 minutes'
             AND sf.site_id = :site_id
         )
 
@@ -279,3 +279,234 @@ def update_battery_config(battery_id: str, updates: dict) -> dict:
         return d
     finally:
         session.close()
+
+
+def _foxess_ts_to_iso(ts_str: str) -> str:
+    """Convert FoxESS timestamp like '2026-09-05 16:03:36 BST+0100' to ISO format."""
+    import re
+    from datetime import datetime, timezone, timedelta
+    m = re.match(r'(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\s+\w+([+-])(\d{4})', ts_str)
+    if not m:
+        return ts_str
+    date_str, time_str, sign_char, tz_digits = m.groups()
+    sign = 1 if sign_char == '+' else -1
+    tz_hours = int(tz_digits[0:2])
+    tz_mins = int(tz_digits[2:4])
+    tz = timezone(timedelta(hours=sign * tz_hours, minutes=sign * tz_mins))
+    dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
+    return dt.isoformat()
+
+
+def get_battery_realtime(user_id: str) -> dict:
+    """Fetch real-time SOC and last 4 hours of history from FoxESS.
+
+    Returns {soc_pct: float|None, history: [{time, soc_pct, charge_kw, discharge_kw, grid_import_kw}]}
+    """
+    import hashlib
+    import time as _time
+    import requests
+
+    battery = get_user_battery(user_id)
+    if not battery:
+        return {"soc_pct": None, "history": []}
+
+    config = battery.get("provider_config") or {}
+    foxess_key = config.get("foxess_api_key")
+    device_sn = config.get("foxess_device_sn")
+
+    if not foxess_key or not device_sn:
+        return {"soc_pct": None, "history": []}
+
+    base_url = "https://www.foxesscloud.com"
+    headers_base = {"Content-Type": "application/json", "lang": "en"}
+
+    def _sign(path: str, key: str, ts: int) -> dict:
+        sig = hashlib.md5(f"{path}\r\n{key}\r\n{ts}".encode()).hexdigest()
+        return {**headers_base, "signature": sig, "token": key, "timestamp": str(ts)}
+
+    soc_pct = None
+    history = []
+
+    # 1. Real-time SOC
+    try:
+        path = "/op/v0/device/real/query"
+        ts = int(_time.time() * 1000)
+        resp = requests.post(
+            f"{base_url}{path}",
+            headers=_sign(path, foxess_key, ts),
+            json={"sn": device_sn, "variables": ["SoC"]},
+            timeout=10,
+        )
+        if resp.ok:
+            data = resp.json()
+            for entry in data.get("result", [{}])[0].get("datas", []):
+                if entry.get("variable") == "SoC":
+                    soc_pct = float(entry.get("value", 0))
+                    break
+    except Exception:
+        pass
+
+    # 2. History: last 4 hours, aggregated to 30-min buckets
+    try:
+        path = "/op/v0/device/history/query"
+        now_ms = int(_time.time() * 1000)
+        begin_ms = now_ms - (4 * 60 * 60 * 1000)
+        ts = int(_time.time() * 1000)
+        resp = requests.post(
+            f"{base_url}{path}",
+            headers=_sign(path, foxess_key, ts),
+            json={
+                "sn": device_sn,
+                "variables": ["SoC", "batChargePower", "batDischargePower", "gridConsumptionPower", "pvPower"],
+                "begin": begin_ms,
+                "end": now_ms,
+            },
+            timeout=15,
+        )
+        if resp.ok:
+            import re
+            from datetime import datetime, timezone, timedelta
+            data = resp.json()
+
+            # Parse FoxESS timestamp to datetime
+            def _parse_fox(ts_str):
+                m = re.match(r'(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})\s+\w+([+-])(\d{4})', ts_str)
+                if not m:
+                    return None
+                date_s, time_s, sign_char, tz_digits = m.groups()
+                sign = 1 if sign_char == '+' else -1
+                tz = timezone(timedelta(hours=sign*int(tz_digits[0:2]), minutes=sign*int(tz_digits[2:4])))
+                return datetime.strptime(f"{date_s} {time_s}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
+
+            # Round datetime down to nearest 30-min bucket
+            def _bucket_30(dt):
+                if dt.minute < 30:
+                    return dt.replace(minute=0, second=0, microsecond=0)
+                else:
+                    return dt.replace(minute=30, second=0, microsecond=0)
+
+            # Collect raw data points keyed by original time string
+            raw = {}
+            for entry in data.get("result", [{}])[0].get("datas", []):
+                var_name = entry.get("variable")
+                for d in entry.get("data", []):
+                    t = d.get("time")
+                    v = d.get("value")
+                    if t is None or v is None:
+                        continue
+                    if t not in raw:
+                        raw[t] = {}
+                    raw[t][var_name] = float(v)
+
+            # Integrate power (kW) over time to get energy (kWh), then aggregate into 30-min buckets.
+            # FoxESS returns ~5-min power samples; energy = power × Δt_hours.
+            power_vars = ["batChargePower", "batDischargePower", "gridConsumptionPower", "pvPower"]
+
+            # Sort all raw points by timestamp
+            sorted_points = []
+            for t_str, vals in raw.items():
+                dt = _parse_fox(t_str)
+                if dt:
+                    sorted_points.append((dt, t_str, vals))
+            sorted_points.sort(key=lambda x: x[0])
+
+            # Compute energy for each sample: power × hours_since_previous_sample
+            energy_points = []
+            for i, (dt, t_str, vals) in enumerate(sorted_points):
+                if i == 0:
+                    dt_hours = 5.0 / 60.0  # first sample: assume 5-min interval
+                else:
+                    dt_hours = (dt - sorted_points[i - 1][0]).total_seconds() / 3600.0
+                    dt_hours = max(dt_hours, 1.0 / 60.0)  # clamp to at least 1 min
+                ep = {"dt": dt, "t_str": t_str}
+                for v in power_vars:
+                    ep[v] = vals.get(v, 0.0) * dt_hours
+                if "SoC" in vals:
+                    ep["SoC"] = vals["SoC"]
+                energy_points.append(ep)
+
+            # Aggregate energy into 30-min buckets
+            buckets = {}
+            for ep in energy_points:
+                bucket = _bucket_30(ep["dt"])
+                key = bucket.isoformat()
+                if key not in buckets:
+                    buckets[key] = {"time": key, "soc": [], "charge": 0.0, "discharge": 0.0,
+                                    "grid": 0.0, "load": 0.0, "pv": 0.0}
+                if "SoC" in ep:
+                    buckets[key]["soc"].append(ep["SoC"])
+                buckets[key]["charge"] += ep["batChargePower"]
+                buckets[key]["discharge"] += ep["batDischargePower"]
+                buckets[key]["grid"] += ep["gridConsumptionPower"]
+                buckets[key]["pv"] += ep["pvPower"]
+                buckets[key]["load"] += (ep["gridConsumptionPower"]
+                                          + ep["batDischargePower"]
+                                          + ep["pvPower"])
+
+            # Build final history: SoC = last value in bucket, energy values in kWh
+            history = []
+            for key in sorted(buckets):
+                b = buckets[key]
+                soc_val = b["soc"][-1] if b["soc"] else None
+                entry = {"time": b["time"]}
+                if soc_val is not None:
+                    entry["soc_pct"] = soc_val
+                entry["charge_kwh"] = round(b["charge"], 3)
+                entry["discharge_kwh"] = round(b["discharge"], 3)
+                entry["grid_import_kwh"] = round(b["grid"], 3)
+                entry["load_kwh"] = round(b["load"], 3)
+                entry["pv_kwh"] = round(b["pv"], 3)
+                history.append(entry)
+
+            # Attach Agile prices to historic periods
+            if history:
+                from datetime import timezone as tz, timedelta as td
+                bst = tz(td(hours=1))
+                first_time = history[0]["time"]
+                last_time = history[-1]["time"]
+                # Parse ISO times to get UTC bounds for the query
+                dt_first = datetime.fromisoformat(first_time)
+                dt_last = datetime.fromisoformat(last_time)
+                # Convert to UTC for DB query
+                if dt_first.tzinfo is None:
+                    dt_first = dt_first.replace(tzinfo=bst)
+                if dt_last.tzinfo is None:
+                    dt_last = dt_last.replace(tzinfo=bst)
+                dt_first_utc = dt_first.astimezone(tz.utc)
+                dt_last_utc = dt_last.astimezone(tz.utc) + td(minutes=30)
+
+                try:
+                    from sqlalchemy import text as sql_text
+                    session = SessionLocal()
+                    try:
+                        result = session.execute(sql_text("""
+                            SELECT period_end, import_price, export_price
+                            FROM agile_rates
+                            WHERE period_end >= :start AND period_end <= :end
+                            ORDER BY period_end
+                        """), {"start": dt_first_utc.replace(tzinfo=None),
+                               "end": dt_last_utc.replace(tzinfo=None)})
+                        price_map = {}
+                        for r in result.mappings():
+                            pe = r["period_end"]
+                            if pe.tzinfo is None:
+                                pe = pe.replace(tzinfo=tz.utc)
+                            pe_bst = pe.astimezone(bst)
+                            time_str = pe_bst.strftime("%H:%M")
+                            price_map[time_str] = {
+                                "import_price": float(r["import_price"]),
+                                "export_price": float(r["export_price"]),
+                            }
+                        for entry in history:
+                            hhmm = entry["time"][11:16]  # extract HH:MM from ISO
+                            if hhmm in price_map:
+                                entry["import_price"] = price_map[hhmm]["import_price"]
+                                entry["export_price"] = price_map[hhmm]["export_price"]
+                    finally:
+                        session.close()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return {"soc_pct": soc_pct, "history": history}

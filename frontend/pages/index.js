@@ -14,9 +14,36 @@ export default function Home() {
   const [user, setUser] = useState(null)
   const [site, setSite] = useState(null)
   const [siteLoading, setSiteLoading] = useState(true)
+  const [realtimeData, setRealtimeData] = useState({ soc_pct: null, history: [], fetchedAt: null })
+  const [dayPrices, setDayPrices] = useState([])
   const checkedSessionRef = useRef(false)
+  const autoRanRef = useRef(false)
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+  const fetchRealtime = useCallback(async (accessToken) => {
+    try {
+      const resp = await fetch(`${apiUrl}/battery/realtime`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setRealtimeData({ ...data, fetchedAt: new Date().toISOString() })
+      }
+    } catch {
+      // Silently fail — fallback to manual SOC input
+    }
+    // Also fetch today's prices
+    try {
+      const resp = await fetch(`${apiUrl}/tariff/prices`, {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      })
+      if (resp.ok) {
+        const data = await resp.json()
+        setDayPrices(data.prices || [])
+      }
+    } catch {}
+  }, [apiUrl])
 
   const checkSite = useCallback(async (accessToken) => {
     if (!accessToken) {
@@ -31,6 +58,7 @@ export default function Home() {
       if (res.ok) {
         const data = await res.json()
         setSite(data.site)
+        fetchRealtime(accessToken)
       } else {
         setSite(null)
       }
@@ -125,6 +153,21 @@ export default function Home() {
     }
   }, [checkSite])
 
+  // Auto-run optimiser once site and realtime data are loaded
+  useEffect(() => {
+    if (site && realtimeData.soc_pct !== null && !autoRanRef.current && !loading && !schedule) {
+      autoRanRef.current = true
+      handleOptimise({
+        battery_capacity_kwh: 5.0,
+        initial_soc_pct: realtimeData.soc_pct,
+        min_soc_pct: 20.0,
+        max_soc_pct: 100.0,
+        charge_power_kw: 3.0,
+        discharge_power_kw: 3.0,
+      })
+    }
+  }, [site, realtimeData.soc_pct])
+
   const handleLogout = async () => {
     await supabase.auth.signOut()
   }
@@ -190,7 +233,7 @@ export default function Home() {
                 {/* Form Panel */}
                 <div className="lg:col-span-1">
                   <div className="bg-white rounded-lg shadow p-6 sticky top-4">
-                    <OptimiserForm onSubmit={handleOptimise} loading={loading} />
+                    <OptimiserForm onSubmit={handleOptimise} loading={loading} defaultSoc={realtimeData.soc_pct} />
                   </div>
                 </div>
 
@@ -247,7 +290,7 @@ export default function Home() {
                       </div>
 
                       {/* Charts */}
-                      <ScheduleCharts schedule={schedule} />
+                      <ScheduleCharts schedule={schedule} historicData={realtimeData.history} nowTime={realtimeData.fetchedAt} dayPrices={dayPrices} />
                     </>
                   )}
 

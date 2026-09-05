@@ -1,29 +1,77 @@
 import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Title,
   Tooltip,
   Legend,
-  ResponsiveContainer,
-} from 'recharts'
+  Filler,
+} from 'chart.js'
+import annotationPlugin from 'chartjs-plugin-annotation'
+import { Line, Bar } from 'react-chartjs-2'
 
-export default function ScheduleCharts({ schedule }) {
+ChartJS.register(
+  CategoryScale, LinearScale, PointElement, LineElement,
+  BarElement, Title, Tooltip, Legend, Filler, annotationPlugin
+)
+
+const NOW_ANNOTATION = (label) => label ? {
+  now: {
+    type: 'line',
+    xMin: label,
+    xMax: label,
+    borderColor: '#6B7280',
+    borderWidth: 2,
+    borderDash: [6, 3],
+    label: { display: false },
+  },
+} : {}
+
+const COMMON_OPTIONS = (nowLabel) => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  plugins: {
+    legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
+    annotation: { annotations: NOW_ANNOTATION(nowLabel) },
+  },
+  scales: {
+    x: {
+      ticks: { maxRotation: 90, minRotation: 90, font: { size: 9 }, autoSkip: false },
+      grid: { display: false },
+    },
+  },
+})
+
+export default function ScheduleCharts({ schedule, historicData, nowTime, dayPrices = [] }) {
   if (!schedule || schedule.length === 0) return null
 
-  // Prepare data for charts at half-hourly resolution
-  const hourlyData = schedule.map((period) => {
-    const time = new Date(period.period_end).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    })
+  const nowMs = nowTime ? new Date(nowTime).getTime() : Date.now()
 
+  const historic = (historicData || []).map((d) => {
+    const dt = new Date(d.time)
     return {
-      time,
+      _iso: d.time, _raw: dt.getTime(),
+      time: dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      soc_pct: d.soc_pct !== undefined ? Number(d.soc_pct) : undefined,
+      charge_kwh: d.charge_kwh !== undefined ? Number(d.charge_kwh) : undefined,
+      discharge_kwh: d.discharge_kwh !== undefined ? Number(d.discharge_kwh) : undefined,
+      grid_import_kwh: d.grid_import_kwh !== undefined ? Number(d.grid_import_kwh) : undefined,
+      load_kwh: d.load_kwh !== undefined ? Number(d.load_kwh) : undefined,
+      pv_kwh: d.pv_kwh !== undefined ? Number(d.pv_kwh) : undefined,
+      import_price: d.import_price !== undefined ? Number(d.import_price) : undefined,
+      export_price: d.export_price !== undefined ? Number(d.export_price) : undefined,
+    }
+  }).filter((d) => d._raw <= nowMs)
+
+  const forecast = schedule.map((period) => {
+    const t = new Date(period.period_end)
+    return {
+      _iso: period.period_end, _raw: t.getTime(),
+      time: t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
       pv_estimate: Number(period.pv_estimate || 0),
       demand: Number(period.demand || 0),
       price: Number(period.price || 0),
@@ -36,99 +84,215 @@ export default function ScheduleCharts({ schedule }) {
     }
   })
 
+  // "Now" sits at the last historic point — where real data ends and forecast begins
+  const nowLabel = historic.length > 0 ? historic[historic.length - 1].time : null
+
+  // Build sorted label array (all unique times, deduplicated)
+  const allTimes = [...historic.map(h => ({ time: h.time, _raw: h._raw })),
+    ...forecast.map(f => ({ time: f.time, _raw: f._raw }))]
+    .sort((a, b) => a._raw - b._raw)
+  const seen = new Set()
+  const labels = []
+  for (const t of allTimes) {
+    if (!seen.has(t.time)) {
+      seen.add(t.time)
+      labels.push(t.time)
+    }
+  }
+
+  // Build lookup maps for each dataset
+  const historicMap = Object.fromEntries(historic.map(h => [h.time, h]))
+  const forecastMap = Object.fromEntries(forecast.map(f => [f.time, f]))
+
+  // Prices: merge historic (from FoxESS endpoint) with forecast (from agile_rates)
+  const priceMap = {}
+  for (const h of historic) {
+    if (h.import_price !== undefined) {
+      priceMap[h.time] = { price: h.import_price, export_price: h.export_price ?? 0 }
+    }
+  }
+  for (const p of dayPrices) {
+    const t = new Date(p.period_end)
+    const timeStr = t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    if (!priceMap[timeStr]) {
+      priceMap[timeStr] = {
+        price: Number(p.import_price || 0),
+        export_price: Number(p.export_price || 0),
+      }
+    }
+  }
+
+  // Helper: build a single merged series with segment-based dashing
+  function mergedSeries(label, color, histKey, fcstKey, yAxisID = 'y') {
+    const data = labels.map(l => {
+      if (historicMap[l] && historicMap[l][histKey] !== undefined) return historicMap[l][histKey]
+      if (forecastMap[l] && forecastMap[l][fcstKey] !== undefined) return forecastMap[l][fcstKey]
+      return null
+    })
+    return {
+      label,
+      data,
+      borderColor: color,
+      backgroundColor: color,
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.3,
+      yAxisID,
+      segment: {
+        borderDash: (ctx) => {
+          const i = ctx.p0DataIndex
+          const time = labels[i]
+          return forecastMap[time] ? [8, 4] : undefined
+        },
+      },
+    }
+  }
+
+  // ---- Chart 1: Solar, Demand & Price ----
+  const solarData = {
+    labels,
+    datasets: [
+      mergedSeries('Solar (kWh)', '#FBBF24', 'pv_kwh', 'pv_estimate'),
+      mergedSeries('Demand (kWh)', '#A78BFA', 'load_kwh', 'demand'),
+      mergedSeries('Grid Import (kWh)', '#EF4444', 'grid_import_kwh', 'grid_import'),
+      { label: 'Import Price (p/kWh)', data: labels.map(l => priceMap[l]?.price ?? null), borderColor: '#FB923C', backgroundColor: '#FB923C', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y1' },
+      { label: 'Export Price (p/kWh)', data: labels.map(l => priceMap[l]?.export_price ?? null), borderColor: '#34D399', backgroundColor: '#34D399', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y1' },
+    ],
+  }
+
+  const solarOptions = {
+    ...COMMON_OPTIONS(nowLabel),
+    scales: {
+      ...COMMON_OPTIONS(nowLabel).scales,
+      y: { position: 'left', title: { display: true, text: 'kWh' } },
+      y1: { position: 'right', title: { display: true, text: 'pence/kWh' }, grid: { drawOnChartArea: false } },
+    },
+  }
+
+  // ---- Chart 2: Battery SOC ----
+  const socData = {
+    labels,
+    datasets: [
+      mergedSeries('SOC (%)', '#3B82F6', 'soc_pct', 'soc_pct'),
+    ],
+  }
+
+  const socOptions = {
+    ...COMMON_OPTIONS(nowLabel),
+    scales: {
+      ...COMMON_OPTIONS(nowLabel).scales,
+      y: { min: 0, max: 100, title: { display: true, text: 'SOC (%)' } },
+    },
+  }
+
+  // ---- Chart 3: Battery Actions (bars) ----
+  const actionsData = {
+    labels,
+    datasets: [
+      { label: 'Charge (kWh)', data: labels.map(l => historicMap[l]?.charge_kwh ?? forecastMap[l]?.batt_charge ?? null), backgroundColor: '#10B981' },
+      { label: 'Discharge (kWh)', data: labels.map(l => historicMap[l]?.discharge_kwh ?? forecastMap[l]?.batt_discharge ?? null), backgroundColor: '#F59E0B' },
+    ],
+  }
+
+  const actionsOptions = {
+    ...COMMON_OPTIONS(nowLabel),
+    scales: {
+      ...COMMON_OPTIONS(nowLabel).scales,
+      y: { title: { display: true, text: 'Energy (kWh)' } },
+    },
+  }
+
+  // ---- Chart 4: Grid Energy (bars) ----
+  const gridData = {
+    labels,
+    datasets: [
+      { label: 'Grid Import (kWh)', data: labels.map(l => historicMap[l]?.grid_import_kwh ?? forecastMap[l]?.grid_import ?? null), backgroundColor: '#EF4444' },
+      { label: 'Grid Export (kWh)', data: labels.map(l => forecastMap[l]?.grid_export ?? null), backgroundColor: '#22C55E' },
+    ],
+  }
+
+  const gridOptions = {
+    ...COMMON_OPTIONS(nowLabel),
+    scales: {
+      ...COMMON_OPTIONS(nowLabel).scales,
+      y: { title: { display: true, text: 'Energy (kWh)' } },
+    },
+  }
+
+  // ---- Chart 5: Cumulative Cost ----
+  // Build cumulative cost across ALL labels (historic + forecast)
+  let cumCost = 0
+  const costDataPoints = labels.map((l) => {
+    // Historic cost
+    if (historicMap[l] && historicMap[l].import_price !== undefined) {
+      const d = historicMap[l]
+      const importCost = Number(d.grid_import_kwh || 0) * (Number(d.import_price || 0) / 100)
+      // No export in historic — assume 0
+      cumCost += importCost
+      return cumCost
+    }
+    // Forecast cost
+    if (forecastMap[l]) {
+      const d = forecastMap[l]
+      const importCost = Number(d.grid_import || 0) * (Number(d.price || 0) / 100)
+      const exportRevenue = Number(d.grid_export || 0) * (Number(d.export_price || 0) / 100)
+      cumCost += (importCost - exportRevenue)
+      return cumCost
+    }
+    return null
+  })
+
+  // Fill nulls by carrying forward the last known cumulative cost
+  let lastCost = 0
+  const filledCostData = costDataPoints.map((v) => {
+    if (v !== null) { lastCost = v }
+    return lastCost
+  })
+
+  const costData = {
+    labels,
+    datasets: [
+      { label: 'Cumulative Cost (£)', data: filledCostData, borderColor: '#8B5CF6', backgroundColor: '#8B5CF6', borderWidth: 2, pointRadius: 0, tension: 0.3, spanGaps: true },
+    ],
+  }
+
+  const costOptions = {
+    ...COMMON_OPTIONS(nowLabel),
+    scales: {
+      ...COMMON_OPTIONS(nowLabel).scales,
+      y: { title: { display: true, text: 'Cost (£)' } },
+    },
+    plugins: {
+      ...COMMON_OPTIONS(nowLabel).plugins,
+      tooltip: {
+        callbacks: {
+          label: (ctx) => `${ctx.dataset.label}: £${Number(ctx.parsed.y).toFixed(2)}`,
+        },
+      },
+    },
+  }
+
   return (
     <div className="space-y-8">
-      {/* Solar, Demand, Price Chart */}
       <div className="bg-white rounded-lg shadow p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Solar, Demand & Price</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={hourlyData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
-            <YAxis yAxisId="left" label={{ value: 'kWh', angle: -90, position: 'insideLeft' }} />
-            <YAxis yAxisId="right" orientation="right" label={{ value: 'pence/kWh', angle: 90, position: 'insideRight' }} />
-            <Tooltip />
-            <Legend />
-            <Line yAxisId="left" type="monotone" dataKey="pv_estimate" stroke="#FBBF24" name="Solar (kWh)" strokeWidth={2} dot={false} />
-            <Line yAxisId="left" type="monotone" dataKey="demand" stroke="#A78BFA" name="Demand (kWh)" strokeWidth={2} dot={false} />
-            <Line yAxisId="right" type="monotone" dataKey="price" stroke="#EF4444" name="Import Price (p/kWh)" strokeWidth={2} dot={false} />
-            <Line yAxisId="right" type="monotone" dataKey="export_price" stroke="#10B981" name="Export Price (p/kWh)" strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
+        <div style={{ height: 300 }}><Line data={solarData} options={solarOptions} /></div>
       </div>
-
-      {/* Battery State of Charge */}
       <div className="bg-white rounded-lg shadow p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Battery State of Charge</h3>
-        <ResponsiveContainer width="100%" height={250}>
-          <LineChart data={hourlyData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
-            <YAxis label={{ value: 'SOC (%)', angle: -90, position: 'insideLeft' }} domain={[0, 100]} />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey="soc_pct" stroke="#3B82F6" name="SOC (%)" strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
+        <div style={{ height: 250 }}><Line data={socData} options={socOptions} /></div>
       </div>
-
-      {/* Battery Charge/Discharge */}
       <div className="bg-white rounded-lg shadow p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Battery Actions</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={hourlyData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
-            <YAxis label={{ value: 'Energy (kWh)', angle: -90, position: 'insideLeft' }} />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="batt_charge" fill="#10B981" name="Charge (kWh)" />
-            <Bar dataKey="batt_discharge" fill="#F59E0B" name="Discharge (kWh)" />
-          </BarChart>
-        </ResponsiveContainer>
+        <div style={{ height: 300 }}><Bar data={actionsData} options={actionsOptions} /></div>
       </div>
-
-      {/* Grid Import/Export */}
       <div className="bg-white rounded-lg shadow p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Grid Energy</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={hourlyData}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
-            <YAxis label={{ value: 'Energy (kWh)', angle: -90, position: 'insideLeft' }} />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="grid_import" fill="#EF4444" name="Import (kWh)" />
-            <Bar dataKey="grid_export" fill="#22C55E" name="Export (kWh)" />
-          </BarChart>
-        </ResponsiveContainer>
+        <div style={{ height: 300 }}><Bar data={gridData} options={gridOptions} /></div>
       </div>
-
-      {/* Energy Balance Sankey-like view using stacked data */}
       <div className="bg-white rounded-lg shadow p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Cumulative Cost</h3>
-        <ResponsiveContainer width="100%" height={250}>
-          <LineChart data={hourlyData.map((d, i) => ({
-            ...d,
-            // Prefer backend-provided per-timestep cost if available to match summary exactly
-            cumulative_cost: hourlyData.slice(0, i + 1).reduce((sum, x) => {
-              if (x.cost_gbp !== undefined) return sum + Number(x.cost_gbp)
-              const importCost = Number(x.grid_import || 0) * (Number(x.price || 0) / 100)
-              const exportRevenue = Number(x.grid_export || 0) * (Number(x.export_price || 0) / 100)
-              return sum + (importCost - exportRevenue)
-            }, 0)
-          }))}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
-            <YAxis label={{ value: 'Cost (£)', angle: -90, position: 'insideLeft' }} />
-            <Tooltip formatter={(value) => {
-              if (value === undefined || value === null || Number.isNaN(Number(value))) return '0.00'
-              return Number(value).toFixed(2)
-            }} />
-            <Legend />
-            <Line type="monotone" dataKey="cumulative_cost" stroke="#8B5CF6" name="Cumulative Cost (£)" strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
+        <div style={{ height: 250 }}><Line data={costData} options={costOptions} /></div>
       </div>
     </div>
   )

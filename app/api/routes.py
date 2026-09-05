@@ -8,7 +8,7 @@ from app.core.optimiser import mvp_cost_minimiser
 from app.services.data_provider import (
     get_optimiser_inputs, get_user_site, create_site,
     create_battery, create_tariff, get_user_battery, update_battery_provider_config,
-    update_battery_config
+    update_battery_config, get_battery_realtime
 )
 
 router = APIRouter()
@@ -172,6 +172,50 @@ def post_tariff(req: CreateTariffRequest, user: dict = Depends(verify_token)):
         config_json=req.config_json,
     )
     return {"tariff": tariff}
+
+
+@router.get("/tariff/prices")
+def get_prices(user: dict = Depends(verify_token)):
+    """Return all Agile prices for today (past + future) from agile_rates."""
+    from sqlalchemy import text
+    from app.core.database import SessionLocal
+    from datetime import timezone, timedelta
+    session = SessionLocal()
+    try:
+        result = session.execute(text("""
+            SELECT period_end, import_price, export_price
+            FROM agile_rates
+            WHERE period_end >= date_trunc('day', now() AT TIME ZONE 'Europe/London')
+              AND period_end < date_trunc('day', now() AT TIME ZONE 'Europe/London') + interval '1 day'
+            ORDER BY period_end
+        """))
+        rows = []
+        bst = timezone(timedelta(hours=1))
+        for r in result.mappings().all():
+            pe = r["period_end"]
+            # Ensure timezone-aware: if naive, assume UTC then convert to BST
+            if pe.tzinfo is None:
+                pe = pe.replace(tzinfo=timezone.utc).astimezone(bst)
+            rows.append({
+                "period_end": pe.isoformat(),
+                "import_price": float(r["import_price"]),
+                "export_price": float(r["export_price"]),
+            })
+        return {"prices": rows}
+    finally:
+        session.close()
+
+
+# --- Real-time battery data ---
+
+@router.get("/battery/realtime")
+def get_realtime(user: dict = Depends(verify_token)):
+    """Fetch real-time SOC and last 4 hours of history from FoxESS."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    data = get_battery_realtime(user_id)
+    return data
 
 
 # --- Optimiser ---
