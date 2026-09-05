@@ -50,6 +50,7 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
                     + date_part('minute', sf.period_end) / 30) AS hh_slot
             FROM solcast_forecast sf
             WHERE sf.period_end >= now()
+            AND sf.site_id = :site_id
         )
 
         SELECT
