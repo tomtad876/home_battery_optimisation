@@ -5,7 +5,10 @@ from pydantic import BaseModel
 
 from app.core.auth import verify_token
 from app.core.optimiser import mvp_cost_minimiser
-from app.services.data_provider import get_optimiser_inputs
+from app.services.data_provider import (
+    get_optimiser_inputs, get_user_site, create_site,
+    create_battery, create_tariff
+)
 
 router = APIRouter()
 
@@ -13,6 +16,103 @@ router = APIRouter()
 def health():
     return {"status": "ok"}
 
+
+# --- Site management ---
+
+@router.get("/sites/me")
+def get_my_site(user: dict = Depends(verify_token)):
+    """Return the authenticated user's site, or 404 if none exists."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found. Complete setup first.")
+    return {"site": site}
+
+
+class CreateSiteRequest(BaseModel):
+    name: str = "Home"
+    timezone: str = "Europe/London"
+
+@router.post("/sites")
+def post_site(req: CreateSiteRequest, user: dict = Depends(verify_token)):
+    """Create a new site for the authenticated user."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+
+    existing = get_user_site(user_id)
+    if existing:
+        raise HTTPException(status_code=409, detail="Site already exists")
+
+    site = create_site(user_id, req.name, req.timezone)
+    return {"site": site}
+
+
+# --- Battery config ---
+
+class CreateBatteryRequest(BaseModel):
+    site_id: str
+    capacity_kwh: float = 5.0
+    max_charge_kw: float = 3.0
+    max_discharge_kw: float = 3.0
+    min_soc_pct: float = 20.0
+    max_soc_pct: float = 100.0
+    provider_type: str = "foxess"
+    provider_config: dict | None = None
+
+@router.post("/batteries")
+def post_battery(req: CreateBatteryRequest, user: dict = Depends(verify_token)):
+    """Create battery config for a site."""
+    user_id = user.get("sub")
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found")
+    if str(site["id"]) != req.site_id:
+        raise HTTPException(status_code=403, detail="Not your site")
+
+    battery = create_battery(
+        site_id=req.site_id,
+        capacity_kwh=req.capacity_kwh,
+        max_charge_kw=req.max_charge_kw,
+        max_discharge_kw=req.max_discharge_kw,
+        min_soc_pct=req.min_soc_pct,
+        max_soc_pct=req.max_soc_pct,
+        provider_type=req.provider_type,
+        provider_config=req.provider_config,
+    )
+    return {"battery": battery}
+
+
+# --- Tariff config ---
+
+class CreateTariffRequest(BaseModel):
+    site_id: str
+    import_type: str = "agile"
+    export_type: str = "agile"
+    config_json: dict | None = None
+
+@router.post("/tariffs")
+def post_tariff(req: CreateTariffRequest, user: dict = Depends(verify_token)):
+    """Create tariff config for a site."""
+    user_id = user.get("sub")
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found")
+    if str(site["id"]) != req.site_id:
+        raise HTTPException(status_code=403, detail="Not your site")
+
+    tariff = create_tariff(
+        site_id=req.site_id,
+        import_type=req.import_type,
+        export_type=req.export_type,
+        config_json=req.config_json,
+    )
+    return {"tariff": tariff}
+
+
+# --- Optimiser ---
 
 class MVPOptimiseRequest(BaseModel):
     pv_system_id: str | None = None
@@ -29,18 +129,19 @@ class MVPOptimiseRequest(BaseModel):
 def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
     """
     MVP optimiser endpoint: compute optimal battery dispatch schedule for lowest cost.
-    Uses linear programming (CVXPY) to minimise electricity costs over forecast horizon.
-    
-    Returns a schedule with half-hourly breakdown of:
-    - demand, solar generation, import/export prices
-    - battery charge/discharge, grid import/export
-    - state of charge (SOC) and total cost
+    Scoped to the authenticated user's site.
     """
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found. Complete setup first.")
+
     try:
-        # Prefer single DB-joined inputs (solar, price, demand aggregated)
-        inputs = get_optimiser_inputs()
+        inputs = get_optimiser_inputs(str(site["id"]))
     
-        # Use the joined inputs directly
         schedule = mvp_cost_minimiser(
             inputs_df=inputs,
             battery_capacity_kwh=req.battery_capacity_kwh,
@@ -57,8 +158,6 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
         total_demand = float(schedule["demand"].sum())
         total_import = float(schedule["grid_import_kwh"].sum())
         total_export = float(schedule["grid_export_kwh"].sum())
-        # compute export revenue using per-timestep export price if provided
-        # Compute export revenue from per-timestep export price column (expected name: `export_price` in pence/kWh)
         if "export_price" in schedule.columns:
             total_export_revenue = float((schedule["grid_export_kwh"] * schedule["export_price"] / 100.0).sum())
         else:
