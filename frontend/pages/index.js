@@ -4,8 +4,7 @@ import ScheduleCharts from '@/components/ScheduleCharts'
 import AuthForm from '@/components/AuthForm'
 import SetupWizard from '@/components/SetupWizard'
 import { supabase } from '@/lib/supabaseClient'
-import { useState } from 'react'
-import { useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 
 export default function Home() {
   const [schedule, setSchedule] = useState(null)
@@ -15,19 +14,19 @@ export default function Home() {
   const [user, setUser] = useState(null)
   const [site, setSite] = useState(null)
   const [siteLoading, setSiteLoading] = useState(true)
+  const checkedSessionRef = useRef(false)
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
-  // Check for existing site
-  const checkSite = async (session) => {
-    if (!session?.access_token) {
+  const checkSite = useCallback(async (accessToken) => {
+    if (!accessToken) {
       setSite(null)
       setSiteLoading(false)
       return
     }
     try {
       const res = await fetch(`${apiUrl}/sites/me`, {
-        headers: { 'Authorization': `Bearer ${session.access_token}` },
+        headers: { 'Authorization': `Bearer ${accessToken}` },
       })
       if (res.ok) {
         const data = await res.json()
@@ -40,7 +39,7 @@ export default function Home() {
     } finally {
       setSiteLoading(false)
     }
-  }
+  }, [apiUrl])
 
   const handleOptimise = async (params) => {
     setLoading(true)
@@ -62,7 +61,6 @@ export default function Home() {
       }
       const data = await response.json()
       setSummary(data.summary)
-      // Normalize schedule keys returned by backend to the frontend shape
       const normalized = (data.schedule || []).map((r) => ({
         period_end: r.PeriodEnd ?? r.period_end,
         pv_estimate: r.PvEstimate ?? r.solar ?? r.pv_estimate ?? 0,
@@ -86,17 +84,34 @@ export default function Home() {
 
   useEffect(() => {
     let mounted = true
+
     supabase.auth.getSession().then(({ data }) => {
-      if (mounted) {
-        setUser(data?.session?.user ?? null)
-        checkSite(data?.session)
+      if (!mounted) return
+      const u = data?.session?.user ?? null
+      setUser(u)
+      if (u && data?.session?.access_token) {
+        checkSite(data.session.access_token)
+      } else {
+        setSiteLoading(false)
       }
+      checkedSessionRef.current = true
     })
 
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (mounted) {
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return
+
+      if (event === 'SIGNED_IN') {
         setUser(session?.user ?? null)
-        checkSite(session)
+        if (session?.access_token) {
+          setSiteLoading(true)
+          checkSite(session.access_token)
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setUser(null)
+        setSite(null)
+        setSchedule(null)
+        setSummary(null)
+        setSiteLoading(false)
       }
     })
 
@@ -104,21 +119,17 @@ export default function Home() {
       mounted = false
       listener?.subscription?.unsubscribe && listener.subscription.unsubscribe()
     }
-  }, [])
+  }, [checkSite])
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
-    setUser(null)
-    setSite(null)
-    setSchedule(null)
-    setSummary(null)
   }
 
-  const handleSetupComplete = (newSiteId) => {
-    checkSite(user ? { access_token: null } : null)
-    // Re-fetch site with proper session
+  const handleSetupComplete = () => {
     supabase.auth.getSession().then(({ data }) => {
-      checkSite(data?.session)
+      if (data?.session?.access_token) {
+        checkSite(data.session.access_token)
+      }
     })
   }
 

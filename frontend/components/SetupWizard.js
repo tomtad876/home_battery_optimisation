@@ -36,10 +36,10 @@ export default function SetupWizard({ apiUrl, onComplete }) {
     foxess_api_key: '',
   })
 
-  const headers = {
+  const getHeaders = () => ({
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${session.access_token}`,
-  }
+    'Authorization': `Bearer ${session?.access_token}`,
+  })
 
   const handleCreateSite = async () => {
     setLoading(true)
@@ -47,7 +47,7 @@ export default function SetupWizard({ apiUrl, onComplete }) {
     try {
       const res = await fetch(`${apiUrl}/sites`, {
         method: 'POST',
-        headers,
+        headers: getHeaders(),
         body: JSON.stringify(siteData),
       })
       if (!res.ok) {
@@ -70,7 +70,7 @@ export default function SetupWizard({ apiUrl, onComplete }) {
     try {
       const res = await fetch(`${apiUrl}/batteries`, {
         method: 'POST',
-        headers,
+        headers: getHeaders(),
         body: JSON.stringify({
           site_id: siteId,
           ...batteryData,
@@ -99,7 +99,7 @@ export default function SetupWizard({ apiUrl, onComplete }) {
     try {
       const res = await fetch(`${apiUrl}/tariffs`, {
         method: 'POST',
-        headers,
+        headers: getHeaders(),
         body: JSON.stringify({
           site_id: siteId,
           import_type: tariffData.import_type,
@@ -121,6 +121,14 @@ export default function SetupWizard({ apiUrl, onComplete }) {
 
   const handleFinish = () => {
     onComplete(siteId)
+  }
+
+  if (!session) {
+    return (
+      <div className="bg-white rounded-lg shadow p-6 max-w-md mx-auto">
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    )
   }
 
   const inputClass = "w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
