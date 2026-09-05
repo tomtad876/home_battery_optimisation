@@ -1,11 +1,14 @@
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
+import { decryptProviderConfig } from "../shared/encryption.ts";
 
 serve(async (req: Request) => {
   console.log("fetch-solcast: invoked");
   try {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    const encryptionKey = Deno.env.get("PROVIDER_CONFIG_ENCRYPTION_KEY");
     if (!supabaseKey) throw new Error("SUPABASE_SERVICE_ROLE_KEY not set");
+    if (!encryptionKey) throw new Error("PROVIDER_CONFIG_ENCRYPTION_KEY not set");
 
     const client = createClient(Deno.env.get("SUPABASE_URL")!, supabaseKey);
 
@@ -27,7 +30,7 @@ serve(async (req: Request) => {
     const errors: string[] = [];
 
     for (const battery of batteries) {
-      const config = battery.provider_config as Record<string, string>;
+      const config = decryptProviderConfig(battery.provider_config, encryptionKey);
       const solcastKey = config?.solcast_api_key;
       const pvSystemId = config?.solcast_system_id;
 

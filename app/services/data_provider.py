@@ -5,6 +5,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from app.core.database import SessionLocal
+from app.core.encryption import encrypt_provider_config, decrypt_provider_config
 
 
 def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
@@ -131,13 +132,14 @@ def create_battery(site_id: str, capacity_kwh: float, max_charge_kw: float,
     session = SessionLocal()
     try:
         import json
+        encrypted = encrypt_provider_config(provider_config or {})
         result = session.execute(
             text("""INSERT INTO batteries (id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw, min_soc_pct, max_soc_pct, provider_type, provider_config)
                     VALUES (gen_random_uuid(), :sid, :cap, :mch, :mdis, :minsoc, :maxsoc, :ptype, CAST(:pconf AS json))
                     RETURNING id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw, min_soc_pct, max_soc_pct, provider_type"""),
             {"sid": site_id, "cap": capacity_kwh, "mch": max_charge_kw, "mdis": max_discharge_kw,
              "minsoc": min_soc_pct, "maxsoc": max_soc_pct, "ptype": provider_type,
-             "pconf": json.dumps(provider_config or {})}
+             "pconf": json.dumps({"encrypted": encrypted})}
         )
         row = result.mappings().first()
         session.commit()
@@ -188,26 +190,35 @@ def get_user_battery(user_id: str) -> dict | None:
             d["id"] = str(d["id"])
         if d.get("site_id"):
             d["site_id"] = str(d["site_id"])
-        # Parse provider_config from JSON string if needed
-        if isinstance(d.get("provider_config"), str):
+        # Parse and decrypt provider_config
+        raw = d.get("provider_config")
+        if isinstance(raw, str):
             import json
-            d["provider_config"] = json.loads(d["provider_config"])
+            raw = json.loads(raw)
+        if isinstance(raw, dict) and "encrypted" in raw:
+            d["provider_config"] = decrypt_provider_config(raw["encrypted"])
+        elif isinstance(raw, dict):
+            # Legacy unencrypted — return as-is
+            d["provider_config"] = raw
+        else:
+            d["provider_config"] = {}
         return d
     finally:
         session.close()
 
 
 def update_battery_provider_config(battery_id: str, provider_config: dict) -> dict:
-    """Update the provider_config JSON column for a battery."""
+    """Update the provider_config JSON column for a battery (encrypted)."""
     session = SessionLocal()
     try:
         import json
+        encrypted = encrypt_provider_config(provider_config)
         result = session.execute(
             text("""UPDATE batteries
                     SET provider_config = CAST(:pconf AS json)
                     WHERE id = :bid
                     RETURNING id, site_id, provider_type, provider_config"""),
-            {"bid": battery_id, "pconf": json.dumps(provider_config)}
+            {"bid": battery_id, "pconf": json.dumps({"encrypted": encrypted})}
         )
         row = result.mappings().first()
         session.commit()
@@ -218,8 +229,14 @@ def update_battery_provider_config(battery_id: str, provider_config: dict) -> di
             d["id"] = str(d["id"])
         if d.get("site_id"):
             d["site_id"] = str(d["site_id"])
-        if isinstance(d.get("provider_config"), str):
-            d["provider_config"] = json.loads(d["provider_config"])
+        # Decrypt on return
+        raw = d.get("provider_config")
+        if isinstance(raw, str):
+            raw = json.loads(raw)
+        if isinstance(raw, dict) and "encrypted" in raw:
+            d["provider_config"] = decrypt_provider_config(raw["encrypted"])
+        else:
+            d["provider_config"] = raw or {}
         return d
     finally:
         session.close()
