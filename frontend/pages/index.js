@@ -180,7 +180,10 @@ export default function Home() {
             <>
               <div className="flex items-center justify-between mb-6">
                 <p className="text-sm text-gray-600">Signed in as <span className="font-medium">{user?.email}</span></p>
-                <button onClick={handleLogout} className="text-sm text-red-600 hover:text-red-800">Sign out</button>
+                <div className="flex items-center gap-4">
+                  <a href="/settings" className="text-sm text-blue-600 hover:text-blue-800">Settings</a>
+                  <button onClick={handleLogout} className="text-sm text-red-600 hover:text-red-800">Sign out</button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
@@ -199,10 +202,13 @@ export default function Home() {
                       <p className="text-amber-700 mb-3">
                         We need your solar forecast and energy usage data to generate an optimisation schedule.
                       </p>
-                      <p className="text-amber-600 text-sm">
+                      <p className="text-amber-600 text-sm mb-3">
                         Make sure your Solcast API key, Solcast PV System ID, and FoxESS API key are configured.
                         Data is fetched daily by our background services — it may take up to 24 hours after first setup.
                       </p>
+                      <a href="/settings" className="text-sm font-medium text-amber-700 underline hover:text-amber-900">
+                        Configure API credentials →
+                      </a>
                     </div>
                   ) : error ? (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">

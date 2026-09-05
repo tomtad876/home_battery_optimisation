@@ -163,3 +163,63 @@ def create_tariff(site_id: str, import_type: str, export_type: str, config_json:
         return dict(row)
     finally:
         session.close()
+
+
+def get_user_battery(user_id: str) -> dict | None:
+    """Return the user's battery as a dict, or None."""
+    session = SessionLocal()
+    try:
+        result = session.execute(
+            text("""SELECT b.id, b.site_id, b.capacity_kwh, b.max_charge_kw,
+                           b.max_discharge_kw, b.min_soc_pct, b.max_soc_pct,
+                           b.provider_type, b.provider_config
+                    FROM batteries b
+                    JOIN sites s ON s.id = b.site_id
+                    WHERE s.user_id = :uid
+                    LIMIT 1"""),
+            {"uid": user_id}
+        )
+        row = result.mappings().first()
+        if not row:
+            return None
+        d = dict(row)
+        # Convert UUIDs to strings for JSON serialization
+        if d.get("id"):
+            d["id"] = str(d["id"])
+        if d.get("site_id"):
+            d["site_id"] = str(d["site_id"])
+        # Parse provider_config from JSON string if needed
+        if isinstance(d.get("provider_config"), str):
+            import json
+            d["provider_config"] = json.loads(d["provider_config"])
+        return d
+    finally:
+        session.close()
+
+
+def update_battery_provider_config(battery_id: str, provider_config: dict) -> dict:
+    """Update the provider_config JSON column for a battery."""
+    session = SessionLocal()
+    try:
+        import json
+        result = session.execute(
+            text("""UPDATE batteries
+                    SET provider_config = CAST(:pconf AS json)
+                    WHERE id = :bid
+                    RETURNING id, site_id, provider_type, provider_config"""),
+            {"bid": battery_id, "pconf": json.dumps(provider_config)}
+        )
+        row = result.mappings().first()
+        session.commit()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("id"):
+            d["id"] = str(d["id"])
+        if d.get("site_id"):
+            d["site_id"] = str(d["site_id"])
+        if isinstance(d.get("provider_config"), str):
+            d["provider_config"] = json.loads(d["provider_config"])
+        return d
+    finally:
+        session.close()

@@ -7,7 +7,7 @@ from app.core.auth import verify_token
 from app.core.optimiser import mvp_cost_minimiser
 from app.services.data_provider import (
     get_optimiser_inputs, get_user_site, create_site,
-    create_battery, create_tariff
+    create_battery, create_tariff, get_user_battery, update_battery_provider_config
 )
 
 router = APIRouter()
@@ -83,6 +83,46 @@ def post_battery(req: CreateBatteryRequest, user: dict = Depends(verify_token)):
         provider_config=req.provider_config,
     )
     return {"battery": battery}
+
+
+@router.get("/batteries/me")
+def get_my_battery(user: dict = Depends(verify_token)):
+    """Return the authenticated user's battery config."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    battery = get_user_battery(user_id)
+    if not battery:
+        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+    return {"battery": battery}
+
+
+class UpdateProviderConfigRequest(BaseModel):
+    solcast_api_key: str | None = None
+    solcast_system_id: str | None = None
+    foxess_api_key: str | None = None
+    foxess_device_sn: str | None = None
+
+@router.put("/batteries/me/provider_config")
+def put_provider_config(req: UpdateProviderConfigRequest, user: dict = Depends(verify_token)):
+    """Update the authenticated user's API credentials in provider_config."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    battery = get_user_battery(user_id)
+    if not battery:
+        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+
+    # Merge with existing config
+    existing = battery.get("provider_config") or {}
+    updates = req.model_dump(exclude_unset=True)
+    merged = {**existing, **updates}
+
+    # Remove keys with empty strings
+    merged = {k: v for k, v in merged.items() if v is not None and v != ""}
+
+    updated = update_battery_provider_config(str(battery["id"]), merged)
+    return {"battery": updated}
 
 
 # --- Tariff config ---
