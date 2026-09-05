@@ -17,6 +17,14 @@ def mock_auth():
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def mock_user_site():
+    """Mock get_user_site so optimiser tests pass auth/site checks."""
+    with patch('app.api.routes.get_user_site') as mock:
+        mock.return_value = {"id": "test-site-id", "user_id": "test-user-id", "name": "Test"}
+        yield mock
+
+
 @pytest.fixture
 def client():
     """FastAPI test client."""
