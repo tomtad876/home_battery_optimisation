@@ -16,6 +16,8 @@ export default function Home() {
   const [siteLoading, setSiteLoading] = useState(true)
   const [realtimeData, setRealtimeData] = useState({ soc_pct: null, history: [], fetchedAt: null })
   const [dayPrices, setDayPrices] = useState([])
+  const [pushing, setPushing] = useState(false)
+  const [pushResult, setPushResult] = useState(null)
   const checkedSessionRef = useRef(false)
   const autoRanRef = useRef(false)
 
@@ -111,6 +113,47 @@ export default function Home() {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handlePush = async () => {
+    setPushing(true)
+    setPushResult(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        setPushResult({ success: false, error: 'Not logged in' })
+        return
+      }
+      const resp = await fetch(`${apiUrl}/optimise/push`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          battery_capacity_kwh: 5.0,
+          min_soc_pct: 20.0,
+          max_soc_pct: 100.0,
+          charge_power_kw: 3.0,
+          discharge_power_kw: 3.0,
+        }),
+      })
+      const data = await resp.json()
+      if (resp.ok) {
+        setPushResult({
+          success: true,
+          groups: data.groups_sent,
+          soc: data.soc_at_push,
+          schedule: data.groups || [],
+        })
+      } else {
+        setPushResult({ success: false, error: data.detail || 'Push failed' })
+      }
+    } catch (e) {
+      setPushResult({ success: false, error: 'Network error' })
+    } finally {
+      setPushing(false)
     }
   }
 
@@ -298,6 +341,65 @@ export default function Home() {
 
                       {/* Charts */}
                       <ScheduleCharts schedule={schedule} historicData={realtimeData.history} nowTime={realtimeData.fetchedAt} dayPrices={dayPrices} />
+
+                      {/* Push to Inverter */}
+                      <div className="bg-white rounded-lg shadow p-6 mt-6">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="font-semibold text-gray-900">Push to Inverter</h3>
+                            <p className="text-sm text-gray-500 mt-1">
+                              Send this optimised schedule to your FoxESS inverter. The schedule will be active until the next push or until you change it manually.
+                            </p>
+                          </div>
+                          <button
+                            onClick={handlePush}
+                            disabled={pushing}
+                            className="bg-green-600 text-white py-2 px-6 rounded-md font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap ml-4"
+                          >
+                            {pushing ? 'Pushing...' : 'Push now'}
+                          </button>
+                        </div>
+                        {pushResult && (
+                          <div className="mt-3">
+                            <p className={`text-sm font-medium ${pushResult.success ? 'text-green-700' : 'text-red-700'}`}>
+                              {pushResult.success
+                                ? `Sent ${pushResult.groups} groups to inverter (SOC ${pushResult.soc}%)`
+                                : `Error: ${pushResult.error}`}
+                            </p>
+                            {pushResult.success && pushResult.schedule.length > 0 && (
+                              <div className="mt-3 overflow-x-auto">
+                                <table className="text-xs w-full">
+                                  <thead>
+                                    <tr className="border-b border-gray-200">
+                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Time</th>
+                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Mode</th>
+                                      <th className="text-left py-1 text-gray-500 font-medium">Details</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {pushResult.schedule.map((g, i) => (
+                                      <tr key={i} className="border-b border-gray-100">
+                                        <td className="py-1 pr-3 font-mono text-gray-700">{g.start}–{g.end}</td>
+                                        <td className="py-1 pr-3">
+                                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
+                                            g.mode === 'ForceCharge' ? 'bg-blue-100 text-blue-800' :
+                                            g.mode === 'ForceDischarge' ? 'bg-orange-100 text-orange-800' :
+                                            g.mode === 'Feedin' ? 'bg-green-100 text-green-800' :
+                                            'bg-gray-100 text-gray-800'
+                                          }`}>
+                                            {g.mode}
+                                          </span>
+                                        </td>
+                                        <td className="py-1 text-gray-500">{g.description}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </>
                   )}
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Float, ForeignKey, String, JSON
+from sqlalchemy import Column, Float, ForeignKey, String, JSON, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
@@ -17,3 +17,4 @@ class Battery(Base):
 
     provider_type = Column(String, nullable=False)
     provider_config = Column(JSON, nullable=True)
+    auto_push_enabled = Column(Boolean, default=False, nullable=False)

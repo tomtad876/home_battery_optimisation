@@ -246,7 +246,7 @@ def update_battery_config(battery_id: str, updates: dict) -> dict:
     """Update battery config fields (capacity, power, SOC limits)."""
     session = SessionLocal()
     try:
-        allowed = {"capacity_kwh", "max_charge_kw", "max_discharge_kw", "min_soc_pct", "max_soc_pct"}
+        allowed = {"capacity_kwh", "max_charge_kw", "max_discharge_kw", "min_soc_pct", "max_soc_pct", "auto_push_enabled"}
         fields = {k: v for k, v in updates.items() if k in allowed and v is not None}
         if not fields:
             return None
@@ -256,7 +256,7 @@ def update_battery_config(battery_id: str, updates: dict) -> dict:
                        SET {', '.join(set_parts)}
                        WHERE id = :bid
                        RETURNING id, site_id, capacity_kwh, max_charge_kw, max_discharge_kw,
-                                 min_soc_pct, max_soc_pct, provider_type, provider_config""")
+                                 min_soc_pct, max_soc_pct, provider_type, provider_config, auto_push_enabled""")
         params = {"bid": battery_id, **fields}
         result = session.execute(sql, params)
         row = result.mappings().first()

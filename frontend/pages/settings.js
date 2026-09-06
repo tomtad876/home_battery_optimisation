@@ -17,6 +17,7 @@ export default function CredentialsSettings() {
   const [maxDischargeKw, setMaxDischargeKw] = useState('5.0');
   const [minSocPct, setMinSocPct] = useState('20');
   const [maxSocPct, setMaxSocPct] = useState('100');
+  const [autoPushEnabled, setAutoPushEnabled] = useState(false);
 
   useEffect(() => {
     loadCredentials();
@@ -80,6 +81,7 @@ export default function CredentialsSettings() {
         setMaxDischargeKw(String(data.battery?.max_discharge_kw ?? '5.0'));
         setMinSocPct(String(data.battery?.min_soc_pct ?? '20'));
         setMaxSocPct(String(data.battery?.max_soc_pct ?? '100'));
+        setAutoPushEnabled(data.battery?.auto_push_enabled ?? false);
       } else {
         const err = await resp.json().catch(() => ({}));
         setMessage({ type: 'error', text: err.detail || 'Failed to load credentials.' });
@@ -115,6 +117,7 @@ export default function CredentialsSettings() {
           max_discharge_kw: parseFloat(maxDischargeKw) || 5.0,
           min_soc_pct: parseFloat(minSocPct) || 20,
           max_soc_pct: parseFloat(maxSocPct) || 100,
+          auto_push_enabled: autoPushEnabled,
         }),
       });
 
@@ -234,6 +237,34 @@ export default function CredentialsSettings() {
               />
             </div>
             <div style={styles.halfField} />
+          </div>
+
+          <h2 style={styles.sectionTitle}>Automatic Schedule Push</h2>
+
+          <div style={styles.toggleRow}>
+            <div style={styles.toggleInfo}>
+              <label style={styles.label}>Auto-push schedule to inverter</label>
+              <p style={styles.toggleHint}>
+                When enabled, your optimised battery schedule is automatically pushed to your FoxESS inverter every 30 minutes.
+              </p>
+            </div>
+            <label style={styles.toggle}>
+              <input
+                type="checkbox"
+                checked={autoPushEnabled}
+                onChange={(e) => setAutoPushEnabled(e.target.checked)}
+                style={styles.toggleInput}
+              />
+              <span style={{
+                ...styles.toggleSlider,
+                backgroundColor: autoPushEnabled ? '#2563eb' : '#cbd5e1',
+              }}>
+                <span style={{
+                  ...styles.toggleKnob,
+                  transform: autoPushEnabled ? 'translateX(22px)' : 'translateX(2px)',
+                }} />
+              </span>
+            </label>
           </div>
 
           <h2 style={styles.sectionTitle}>API Credentials</h2>
@@ -387,5 +418,53 @@ const styles = {
   },
   halfField: {
     flex: 1,
+  },
+  toggleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '12px 0',
+  },
+  toggleInfo: {
+    flex: 1,
+    marginRight: '16px',
+  },
+  toggleHint: {
+    fontSize: '12px',
+    color: '#94a3b8',
+    margin: '4px 0 0 0',
+    lineHeight: '1.4',
+  },
+  toggle: {
+    position: 'relative',
+    display: 'inline-block',
+    width: '48px',
+    height: '26px',
+    flexShrink: 0,
+  },
+  toggleInput: {
+    opacity: 0,
+    width: 0,
+    height: 0,
+  },
+  toggleSlider: {
+    position: 'absolute',
+    cursor: 'pointer',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: '26px',
+    transition: '0.3s',
+    display: 'flex',
+    alignItems: 'center',
+  },
+  toggleKnob: {
+    width: '22px',
+    height: '22px',
+    backgroundColor: '#fff',
+    borderRadius: '50%',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+    transition: '0.3s',
   },
 };

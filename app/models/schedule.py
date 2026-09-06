@@ -1,6 +1,6 @@
 import uuid
-from sqlalchemy import Column, DateTime, ForeignKey, String, JSON
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String, JSON
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from app.core.database import Base
 
 class Schedule(Base):
@@ -12,3 +12,9 @@ class Schedule(Base):
     status = Column(String, default="draft")
     sent_at = Column(DateTime)
     provider_response = Column(JSON)
+
+    pushed_at = Column(DateTime(timezone=True))
+    foxess_groups = Column(JSONB)
+    trigger_source = Column(String)  # 'cron' | 'manual'
+    soc_at_push = Column(Float)
+    error_message = Column(String)

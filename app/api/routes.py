@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 import os
 from datetime import datetime, timezone
 from pydantic import BaseModel
+from typing import Optional
 
 from app.core.auth import verify_token
 from app.core.optimiser import mvp_cost_minimiser
@@ -10,6 +11,7 @@ from app.services.data_provider import (
     create_battery, create_tariff, get_user_battery, update_battery_provider_config,
     update_battery_config, get_battery_realtime
 )
+from app.services.foxess import classify_optimiser_output, _merge_groups, classify_and_push
 
 router = APIRouter()
 
@@ -92,6 +94,7 @@ class UpdateBatteryRequest(BaseModel):
     max_discharge_kw: float | None = None
     min_soc_pct: float | None = None
     max_soc_pct: float | None = None
+    auto_push_enabled: bool | None = None
 
 def _get_battery_for_user(user_id: str) -> dict:
     """Return the user's battery, mapping credential/decrypt failures to HTTP errors."""
@@ -300,3 +303,176 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Optimisation failed: {str(e)}")
+
+
+class PushScheduleRequest(BaseModel):
+    battery_capacity_kwh: float = 15.0
+    min_soc_pct: float = 20.0
+    max_soc_pct: float = 90.0
+    charge_power_kw: float = 3.0
+    discharge_power_kw: float = 3.0
+
+
+@router.post("/optimise/push")
+def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_token)):
+    """Run optimiser and push the resulting schedule to the FoxESS inverter."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+
+    battery = get_user_battery(user_id)
+    if not battery:
+        raise HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+
+    config = battery.get("provider_config") or {}
+    foxess_key = config.get("foxess_api_key")
+    device_sn = config.get("foxess_device_sn")
+    if not foxess_key or not device_sn:
+        raise HTTPException(status_code=400, detail="FoxESS credentials not configured. Add them in Settings.")
+
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found. Complete setup first.")
+
+    # 1. Get live SOC
+    realtime = get_battery_realtime(user_id)
+    soc_pct = realtime.get("soc_pct")
+    if soc_pct is None:
+        error = realtime.get("error", "Could not fetch live SOC from FoxESS")
+        raise HTTPException(status_code=400, detail=f"Live SOC unavailable: {error}")
+
+    # 2. Run optimiser
+    try:
+        inputs = get_optimiser_inputs(str(site["id"]))
+        if inputs.empty:
+            raise HTTPException(status_code=400, detail="No forecast data available. Check Solcast/FoxESS credentials.")
+
+        schedule = mvp_cost_minimiser(
+            inputs_df=inputs,
+            battery_capacity_kwh=req.battery_capacity_kwh,
+            initial_soc_pct=soc_pct,
+            min_soc_pct=req.min_soc_pct,
+            max_soc_pct=req.max_soc_pct,
+            charge_power_kw=req.charge_power_kw,
+            discharge_power_kw=req.discharge_power_kw,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Optimisation failed: {str(e)}")
+
+    # 3. Classify and push to inverter
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+
+    # Classify first so we can show the groups
+    try:
+        from app.services.foxess import init_api as _init_api
+        import foxesscloud.openapi as _f
+
+        _init_api(foxess_key)
+        _f.device_sn = device_sn
+        info = _f.get_flag()
+        max_groups = _f.max_periods or 8
+
+        groups = classify_optimiser_output(
+            result_df=schedule,
+            threshold=0.05,
+            from_time=now,
+            min_soc_pct=req.min_soc_pct,
+            max_soc_pct=req.max_soc_pct,
+            rated_power_w=req.charge_power_kw * 1000,
+            local_tz=site.get("timezone", "Europe/London"),
+        )
+        if len(groups) > max_groups:
+            groups = _merge_groups(groups, max_groups)
+
+        # Push to device
+        _f.set_schedule(periods=groups, enable=True)
+        pushed = True
+    except Exception as e:
+        groups = []
+        pushed = False
+        push_error = str(e)
+
+    if not pushed:
+        raise HTTPException(status_code=502, detail=f"FoxESS push failed: {push_error}")
+
+    # Build human-readable summary of each group
+    group_summaries = []
+    for g in groups:
+        mode = g.get("workMode", "?")
+        start = f"{g['startHour']:02d}:{g['startMinute']:02d}"
+        end = f"{g['endHour']:02d}:{g['endMinute']:02d}"
+        params = g.get("extraParam", {})
+        desc = f"{start}–{end} {mode}"
+        if mode in ("ForceCharge", "ForceDischarge"):
+            desc += f" (fdPwr={params.get('fdPwr', '?')}W, fdSoc={params.get('fdSoc', '?')}%)"
+        if mode == "ForceCharge":
+            desc += f" (maxSoc={params.get('maxSoc', '?')}%)"
+        group_summaries.append({
+            "start": start,
+            "end": end,
+            "mode": mode,
+            "extraParam": params,
+            "description": desc,
+        })
+
+    return {
+        "status": "success",
+        "pushed": pushed,
+        "groups_sent": len(groups),
+        "soc_at_push": soc_pct,
+        "generated_at": now.isoformat(),
+        "groups": group_summaries,
+    }
+
+
+# --- Internal endpoint for Edge Function calls (service-to-service) ---
+
+INTERNAL_API_KEY = os.environ.get("INTERNAL_API_KEY")
+
+
+def verify_internal_key(x_internal_key: Optional[str] = Header(None)):
+    """Verify internal API key for service-to-service calls."""
+    if not INTERNAL_API_KEY:
+        raise HTTPException(status_code=500, detail="INTERNAL_API_KEY not configured")
+    if x_internal_key != INTERNAL_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid internal API key")
+
+
+class InternalOptimiseRequest(BaseModel):
+    user_id: str
+    battery_capacity_kwh: float = 15.0
+    initial_soc_pct: float = 50.0
+    min_soc_pct: float = 20.0
+    max_soc_pct: float = 90.0
+    charge_power_kw: float = 3.0
+    discharge_power_kw: float = 3.0
+
+
+@router.post("/internal/optimise")
+def internal_optimise(req: InternalOptimiseRequest, _: dict = Depends(verify_internal_key)):
+    """Internal endpoint: run optimiser for a user. Called by Edge Functions."""
+    site = get_user_site(req.user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found for user")
+
+    inputs = get_optimiser_inputs(str(site["id"]))
+    if inputs.empty:
+        raise HTTPException(status_code=400, detail="No forecast data available")
+
+    schedule = mvp_cost_minimiser(
+        inputs_df=inputs,
+        battery_capacity_kwh=req.battery_capacity_kwh,
+        initial_soc_pct=req.initial_soc_pct,
+        min_soc_pct=req.min_soc_pct,
+        max_soc_pct=req.max_soc_pct,
+        charge_power_kw=req.charge_power_kw,
+        discharge_power_kw=req.discharge_power_kw,
+    )
+
+    return {
+        "status": "success",
+        "schedule": schedule.to_dict(orient="records"),
+    }
