@@ -172,6 +172,11 @@ def classify_optimiser_output(
 
     df = result_df.copy()
 
+    # Default missing grid columns to 0 (tests / older callers may omit them)
+    for col in ("grid_import_kwh", "grid_export_kwh"):
+        if col not in df.columns:
+            df[col] = 0.0
+
     if from_time is not None:
         if "period_end" in df.columns:
             # Only keep slots whose START time is in the future (not just period_end)
@@ -181,15 +186,27 @@ def classify_optimiser_output(
     if df.empty:
         return []
 
-    # Classify each slot
+    # Classify each slot.
+    # The key refinement: a positive net battery flow only needs ForceCharge
+    # when it pulls from the grid. If the charge is covered by solar surplus
+    # (no grid import), SelfUse handles it naturally. Similarly, a negative
+    # net flow only needs ForceDischarge when it's exporting to the grid —
+    # if it's just covering home demand, SelfUse is the right mode.
     def _classify(row):
         net = row.get("net_battery_kwh", 0)
         export = row.get("grid_export_kwh", 0)
+        import_kwh = row.get("grid_import_kwh", 0)
         price = row.get("price", 0)
         if net > threshold:
-            return FOXESS_MODE_FORCE_CHARGE
+            # Charging — from grid (needs ForceCharge) or solar surplus (SelfUse)?
+            if import_kwh > threshold:
+                return FOXESS_MODE_FORCE_CHARGE
+            return FOXESS_MODE_SELF_USE
         if net < -threshold:
-            return FOXESS_MODE_FORCE_DISCHARGE
+            # Discharging — exporting to grid (ForceDischarge) or covering demand (SelfUse)?
+            if export > threshold:
+                return FOXESS_MODE_FORCE_DISCHARGE
+            return FOXESS_MODE_SELF_USE
         # Net near zero — battery idle, but solar exporting to grid
         if export > threshold:
             # During negative prices, prefer ForceCharge over Feedin —
@@ -216,16 +233,98 @@ def classify_optimiser_output(
         start_local = start_utc.to_pydatetime().astimezone(tz)
         end_local = end_utc.to_pydatetime().astimezone(tz)
 
+        duration_h = len(grp) * 0.5
+
+        # Per-group force params: size the charge/discharge to what the
+        # optimiser actually scheduled, instead of blasting full power and
+        # charging to 100% / draining to min SOC.
+        grp_min_soc = min_soc_pct
+        grp_max_soc = max_soc_pct
+        grp_power = rated_power_w
+        if mode == FOXESS_MODE_FORCE_CHARGE and "soc_pct" in grp.columns:
+            # maxSoc = highest SOC this charge period reaches (rounded up 5%)
+            grp_max_soc = min(max_soc_pct, _round_soc_up(grp["soc_pct"].max()))
+            # Power = energy to move / time available, rounded up to 100W
+            energy = grp["net_battery_kwh"].sum()
+            grp_power = _round_power_w(energy / duration_h)
+        elif mode == FOXESS_MODE_FORCE_DISCHARGE and "soc_pct" in grp.columns:
+            # fdSoc = lowest SOC reached in this period (rounded DOWN 5%) so
+            # we keep reserve for SelfUse after the forced discharge ends
+            grp_min_soc = max(min_soc_pct, _round_soc_down(grp["soc_pct"].min()))
+            energy = (-grp["net_battery_kwh"]).sum()
+            grp_power = _round_power_w(energy / duration_h)
+
         # Build v3 period dict directly (no foxesscloud dependency)
         period = _build_v3_period(
             start_local, end_local, mode,
-            min_soc_pct=min_soc_pct,
-            max_soc_pct=max_soc_pct,
-            rated_power_w=rated_power_w,
+            min_soc_pct=grp_min_soc,
+            max_soc_pct=grp_max_soc,
+            rated_power_w=grp_power,
         )
         groups.append(period)
 
     return groups
+
+
+def get_device_remain_mode(api_key: str, device_sn: str) -> str | None:
+    """Query the device's default (remain) mode.
+
+    The remain mode is the mode the inverter uses in unscheduled time slots.
+    It appears in the schedule as a 00:00-23:59 group with isRemainMode=True.
+    Returns None if it can't be determined.
+    """
+    try:
+        init_api(api_key)
+        f.device_sn = device_sn
+        sched = f.get_schedule(filter=0)
+        if not sched:
+            return None
+        for p in sched.get("periods", []):
+            if p.get("isRemainMode"):
+                return p.get("workMode")
+        return None
+    except Exception:
+        return None
+
+
+def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
+    """Split any group that spans midnight into two groups (one per day).
+
+    FoxESS does not accept a single schedule period that crosses 00:00.
+    A group whose end time is earlier (in wall-clock terms) than its start
+    time spans midnight and must be split.
+    """
+    out = []
+    for g in groups:
+        start_m = g["startHour"] * 60 + g["startMinute"]
+        end_m = g["endHour"] * 60 + g["endMinute"]
+        if end_m <= start_m:
+            # Spans midnight: split at 23:59 of the first day / 00:00 of the next
+            first = {**g, "endHour": 23, "endMinute": 59}
+            second = {**g, "startHour": 0, "startMinute": 0}
+            out.append(first)
+            out.append(second)
+        else:
+            out.append(g)
+    return out
+
+
+def _round_soc_up(v: float) -> int:
+    """Round a SOC % up to the nearest 5% (capped 0-100)."""
+    import math
+    return min(100, max(0, int(math.ceil(v / 5.0) * 5)))
+
+
+def _round_soc_down(v: float) -> int:
+    """Round a SOC % down to the nearest 5% (capped 0-100)."""
+    import math
+    return min(100, max(0, int(math.floor(v / 5.0) * 5)))
+
+
+def _round_power_w(kw: float) -> int:
+    """Round a kW value up to the nearest 100W, minimum 100W."""
+    import math
+    return max(100, int(math.ceil(kw * 1000 / 100.0) * 100))
 
 
 def _build_v3_period(
@@ -271,6 +370,10 @@ def classify_and_push(
 ) -> dict:
     """Full push sequence: init API → classify → push to device.
 
+    Reads the device's remain (default) mode and drops any classified groups
+    that match it — those instructions are redundant since the inverter
+    already falls back to that mode in unscheduled gaps.
+
     Returns {pushed: bool, groups_sent: int, provider_response: any, error?: str}.
     """
     try:
@@ -297,6 +400,18 @@ def classify_and_push(
         if not groups:
             return {"pushed": False, "groups_sent": 0, "provider_response": None, "error": "No schedule groups to push"}
 
+        # Drop groups matching the device's remain mode (redundant — the
+        # inverter already defaults to that mode in unscheduled gaps).
+        remain_mode = get_device_remain_mode(api_key, device_sn)
+        if remain_mode:
+            groups = [g for g in groups if g.get("workMode") != remain_mode]
+
+        # Split any group that spans midnight (FoxESS rejects cross-midnight periods)
+        groups = split_groups_at_midnight(groups)
+
+        if not groups:
+            return {"pushed": False, "groups_sent": 0, "provider_response": None, "error": "No schedule groups to push after filtering"}
+
         # Merge if over device limit
         if len(groups) > max_groups:
             groups = _merge_groups(groups, max_groups)
@@ -308,6 +423,7 @@ def classify_and_push(
             "pushed": response is not None,
             "groups_sent": len(groups),
             "provider_response": response,
+            "remain_mode": remain_mode,
         }
     except Exception as e:
         return {"pushed": False, "groups_sent": 0, "provider_response": None, "error": str(e)}

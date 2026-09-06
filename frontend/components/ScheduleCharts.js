@@ -18,6 +18,14 @@ ChartJS.register(
   BarElement, Title, Tooltip, Legend, Filler, annotationPlugin
 )
 
+const LOCALE = 'en-GB'
+const TZ = 'Europe/London'
+
+// Format a Date in Europe/London (the device/site timezone) for chart labels
+const fmtTime = (dt) => dt.toLocaleTimeString(LOCALE, {
+  hour: '2-digit', minute: '2-digit', hour12: false, timeZone: TZ,
+})
+
 const NOW_ANNOTATION = (label) => label ? {
   now: {
     type: 'line',
@@ -30,7 +38,7 @@ const NOW_ANNOTATION = (label) => label ? {
   },
 } : {}
 
-const COMMON_OPTIONS = (nowLabel) => ({
+const COMMON_OPTIONS = (nowLabel, keyToLabel = {}) => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index', intersect: false },
@@ -40,7 +48,13 @@ const COMMON_OPTIONS = (nowLabel) => ({
   },
   scales: {
     x: {
-      ticks: { maxRotation: 90, minRotation: 90, font: { size: 9 }, autoSkip: false },
+      ticks: {
+        maxRotation: 90, minRotation: 90, font: { size: 9 }, autoSkip: false,
+        callback: function(val, idx) {
+          const key = this.getLabelForValue(val)
+          return keyToLabel[key] || key
+        },
+      },
       grid: { display: false },
     },
   },
@@ -49,13 +63,16 @@ const COMMON_OPTIONS = (nowLabel) => ({
 export default function ScheduleCharts({ schedule, historicData, nowTime, dayPrices = [] }) {
   if (!schedule || schedule.length === 0) return null
 
+  // Normalize any datetime string to a consistent ISO key for map lookups
+  function isoKey(s) { return new Date(s).toISOString() }
+
   const nowMs = nowTime ? new Date(nowTime).getTime() : Date.now()
 
   const historic = (historicData || []).map((d) => {
     const dt = new Date(d.time)
     return {
-      _iso: d.time, _raw: dt.getTime(),
-      time: dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      _iso: isoKey(d.time), _raw: dt.getTime(),
+      time: fmtTime(dt),
       soc_pct: d.soc_pct !== undefined ? Number(d.soc_pct) : undefined,
       charge_kwh: d.charge_kwh !== undefined ? Number(d.charge_kwh) : undefined,
       discharge_kwh: d.discharge_kwh !== undefined ? Number(d.discharge_kwh) : undefined,
@@ -70,8 +87,8 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   const forecast = schedule.map((period) => {
     const t = new Date(period.period_end)
     return {
-      _iso: period.period_end, _raw: t.getTime(),
-      time: t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      _iso: isoKey(period.period_end), _raw: t.getTime(),
+      time: fmtTime(t),
       pv_estimate: Number(period.pv_estimate || 0),
       demand: Number(period.demand || 0),
       price: Number(period.price || 0),
@@ -85,40 +102,39 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   })
 
   // "Now" sits at the last historic point — where real data ends and forecast begins
-  const nowLabel = historic.length > 0 ? historic[historic.length - 1].time : null
+  const nowLabel = historic.length > 0 ? historic[historic.length - 1]._iso : null
 
-  // Build sorted label array (all unique times, deduplicated)
-  const allTimes = [...historic.map(h => ({ time: h.time, _raw: h._raw })),
-    ...forecast.map(f => ({ time: f.time, _raw: f._raw }))]
+  // Build sorted label array using full ISO date keys to avoid day collisions
+  const allTimes = [...historic.map(h => ({ key: h._iso, time: h.time, _raw: h._raw })),
+    ...forecast.map(f => ({ key: f._iso, time: f.time, _raw: f._raw }))]
     .sort((a, b) => a._raw - b._raw)
   const seen = new Set()
   const labels = []
+  const keyToLabel = {}
   for (const t of allTimes) {
-    if (!seen.has(t.time)) {
-      seen.add(t.time)
-      labels.push(t.time)
+    if (!seen.has(t.key)) {
+      seen.add(t.key)
+      labels.push(t.key)
+      keyToLabel[t.key] = t.time
     }
   }
 
-  // Build lookup maps for each dataset
-  const historicMap = Object.fromEntries(historic.map(h => [h.time, h]))
-  const forecastMap = Object.fromEntries(forecast.map(f => [f.time, f]))
+  // Build lookup maps using ISO keys
+  const historicMap = Object.fromEntries(historic.map(h => [h._iso, h]))
+  const forecastMap = Object.fromEntries(forecast.map(f => [f._iso, f]))
 
-  // Prices: merge historic (from FoxESS endpoint) with forecast (from agile_rates)
+  // Prices: build priceMap using ISO keys, then forecast overrides historic
   const priceMap = {}
   for (const h of historic) {
     if (h.import_price !== undefined) {
-      priceMap[h.time] = { price: h.import_price, export_price: h.export_price ?? 0 }
+      priceMap[h._iso] = { price: h.import_price, export_price: h.export_price ?? 0 }
     }
   }
   for (const p of dayPrices) {
-    const t = new Date(p.period_end)
-    const timeStr = t.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
-    if (!priceMap[timeStr]) {
-      priceMap[timeStr] = {
-        price: Number(p.import_price || 0),
-        export_price: Number(p.export_price || 0),
-      }
+    const key = isoKey(p.period_end)
+    priceMap[key] = {
+      price: Number(p.import_price || 0),
+      export_price: Number(p.export_price || 0),
     }
   }
 
@@ -161,9 +177,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const solarOptions = {
-    ...COMMON_OPTIONS(nowLabel),
+    ...COMMON_OPTIONS(nowLabel, keyToLabel),
     scales: {
-      ...COMMON_OPTIONS(nowLabel).scales,
+      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
       y: { position: 'left', title: { display: true, text: 'kWh' } },
       y1: { position: 'right', title: { display: true, text: 'pence/kWh' }, grid: { drawOnChartArea: false } },
     },
@@ -178,9 +194,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const socOptions = {
-    ...COMMON_OPTIONS(nowLabel),
+    ...COMMON_OPTIONS(nowLabel, keyToLabel),
     scales: {
-      ...COMMON_OPTIONS(nowLabel).scales,
+      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
       y: { min: 0, max: 100, title: { display: true, text: 'SOC (%)' } },
     },
   }
@@ -195,9 +211,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const actionsOptions = {
-    ...COMMON_OPTIONS(nowLabel),
+    ...COMMON_OPTIONS(nowLabel, keyToLabel),
     scales: {
-      ...COMMON_OPTIONS(nowLabel).scales,
+      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
       y: { title: { display: true, text: 'Energy (kWh)' } },
     },
   }
@@ -212,9 +228,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const gridOptions = {
-    ...COMMON_OPTIONS(nowLabel),
+    ...COMMON_OPTIONS(nowLabel, keyToLabel),
     scales: {
-      ...COMMON_OPTIONS(nowLabel).scales,
+      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
       y: { title: { display: true, text: 'Energy (kWh)' } },
     },
   }
@@ -257,13 +273,13 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const costOptions = {
-    ...COMMON_OPTIONS(nowLabel),
+    ...COMMON_OPTIONS(nowLabel, keyToLabel),
     scales: {
-      ...COMMON_OPTIONS(nowLabel).scales,
+      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
       y: { title: { display: true, text: 'Cost (£)' } },
     },
     plugins: {
-      ...COMMON_OPTIONS(nowLabel).plugins,
+      ...COMMON_OPTIONS(nowLabel, keyToLabel).plugins,
       tooltip: {
         callbacks: {
           label: (ctx) => `${ctx.dataset.label}: £${Number(ctx.parsed.y).toFixed(2)}`,

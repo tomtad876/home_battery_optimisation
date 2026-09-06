@@ -56,5 +56,8 @@ ENV/
 # Logs
 *.log
 
+# Supabase CLI local state
+supabase/.temp/
+
 # Migrations (if using Alembic, keep versions tracked but ignore compiled cache)
 *.pyc

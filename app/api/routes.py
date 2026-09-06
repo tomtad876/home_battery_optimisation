@@ -199,7 +199,7 @@ def get_prices(user: dict = Depends(verify_token)):
             SELECT period_end, import_price, export_price
             FROM agile_rates
             WHERE period_end >= date_trunc('day', now() AT TIME ZONE 'Europe/London')
-              AND period_end < date_trunc('day', now() AT TIME ZONE 'Europe/London') + interval '1 day'
+              AND period_end < now() + interval '2 days'
             ORDER BY period_end
         """))
         rows = []
@@ -314,6 +314,7 @@ class PushScheduleRequest(BaseModel):
     max_soc_pct: float | None = None
     charge_power_kw: float | None = None
     discharge_power_kw: float | None = None
+    preview: bool = False  # If true, classify + return groups without pushing
 
 
 @router.post("/optimise/push")
@@ -376,8 +377,13 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
     now = datetime.now(_tz.utc)
 
     # Classify first so we can show the groups
+    remain_mode = None
     try:
-        from app.services.foxess import init_api as _init_api
+        from app.services.foxess import (
+            init_api as _init_api,
+            get_device_remain_mode,
+            split_groups_at_midnight,
+        )
         import foxesscloud.openapi as _f
 
         _init_api(foxess_key)
@@ -394,18 +400,33 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
             rated_power_w=batt_charge_kw * 1000,
             local_tz=site.get("timezone", "Europe/London"),
         )
+
+        # If the device's remain (default) mode matches a classified mode, that
+        # instruction is redundant — the inverter already falls back to that mode
+        # in gaps. Drop groups matching the remain mode, keep everything else.
+        remain_mode = get_device_remain_mode(foxess_key, device_sn)
+        if remain_mode:
+            groups = [g for g in groups if g.get("workMode") != remain_mode]
+
+        # Split any group that spans midnight (FoxESS rejects cross-midnight periods)
+        groups = split_groups_at_midnight(groups)
+
         if len(groups) > max_groups:
             groups = _merge_groups(groups, max_groups)
 
-        # Push to device
-        _f.set_schedule(periods=groups, enable=True)
-        pushed = True
+        if req.preview:
+            # Preview mode: classify and return groups without pushing
+            pushed = False
+        else:
+            # Push to device
+            _f.set_schedule(periods=groups, enable=True)
+            pushed = True
     except Exception as e:
         groups = []
         pushed = False
         push_error = str(e)
 
-    if not pushed:
+    if not pushed and not req.preview:
         raise HTTPException(status_code=502, detail=f"FoxESS push failed: {push_error}")
 
     # Build human-readable summary of each group
@@ -430,10 +451,12 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
 
     return {
         "status": "success",
-        "pushed": pushed,
+        "pushed": pushed if not req.preview else False,
+        "preview": req.preview,
         "groups_sent": len(groups),
         "soc_at_push": soc_pct,
         "generated_at": now.isoformat(),
+        "remain_mode": remain_mode if req.preview else None,
         "groups": group_summaries,
     }
 

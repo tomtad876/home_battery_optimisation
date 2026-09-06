@@ -44,8 +44,8 @@ serve(async (req: Request) => {
         const now = new Date();
         const intervals = [];
 
-        // Fetch last 7 days of demand history
-        for (let i = 6; i >= 0; i--) {
+        // Fetch last 2 days of demand history (runs daily — no need for a full week)
+        for (let i = 1; i >= 0; i--) {
           const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
           const dayStr = day.toISOString().slice(0, 10);
 

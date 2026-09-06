@@ -99,13 +99,60 @@ export async function getDeviceScheduleInfo(
 }
 
 /**
+ * Read the device's remain (default) mode.
+ *
+ * The remain mode is the mode the inverter uses in unscheduled time slots.
+ * It appears in the current schedule as a 00:00-23:59 group (isRemainMode).
+ * Returns null if it can't be determined.
+ */
+export async function getDeviceRemainMode(
+  apiKey: string,
+  deviceSn: string
+): Promise<string | null> {
+  const resp = await foxessPost(
+    "/op/v3/device/scheduler/get",
+    apiKey,
+    { deviceSN: deviceSn }
+  );
+  if (!resp.ok || resp.data?.result == null) return null;
+  const groups = resp.data.result.groups || [];
+  for (const g of groups) {
+    const isRemain =
+      g.startHour === 0 && g.startMinute === 0 &&
+      g.endHour === 23 && g.endMinute === 59;
+    if (isRemain) return g.workMode;
+  }
+  return null;
+}
+
+/**
+ * Split any group that spans midnight into two groups (one per day).
+ * FoxESS does not accept a single schedule period that crosses 00:00.
+ */
+export function splitGroupsAtMidnight<T extends { startHour: number; startMinute: number; endHour: number; endMinute: number }>(
+  groups: T[]
+): T[] {
+  const out: T[] = [];
+  for (const g of groups) {
+    const startM = g.startHour * 60 + g.startMinute;
+    const endM = g.endHour * 60 + g.endMinute;
+    if (endM <= startM) {
+      out.push({ ...g, endHour: 23, endMinute: 59 });
+      out.push({ ...g, startHour: 0, startMinute: 0 });
+    } else {
+      out.push(g);
+    }
+  }
+  return out;
+}
+
+/**
  * Disable the schedule on the device.
  */
 export async function disableSchedule(
   apiKey: string,
   deviceSn: string
-): Promise<void> {
-  const resp = await foxessPost(
+): Promise<void> {  const resp = await foxessPost(
     "/op/v1/device/scheduler/set/flag",
     apiKey,
     { deviceSN: deviceSn, enable: 0 }

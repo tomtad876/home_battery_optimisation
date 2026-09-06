@@ -18,6 +18,8 @@ export default function Home() {
   const [dayPrices, setDayPrices] = useState([])
   const [pushing, setPushing] = useState(false)
   const [pushResult, setPushResult] = useState(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [previewResult, setPreviewResult] = useState(null)
   const checkedSessionRef = useRef(false)
   const autoRanRef = useRef(false)
 
@@ -113,6 +115,48 @@ export default function Home() {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handlePreview = async () => {
+    setPreviewing(true)
+    setPreviewResult(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) {
+        setPreviewResult({ success: false, error: 'Not logged in' })
+        return
+      }
+      const resp = await fetch(`${apiUrl}/optimise/push`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          battery_capacity_kwh: 5.0,
+          min_soc_pct: 20.0,
+          max_soc_pct: 100.0,
+          charge_power_kw: 3.0,
+          discharge_power_kw: 3.0,
+          preview: true,
+        }),
+      })
+      const data = await resp.json()
+      if (resp.ok) {
+        setPreviewResult({
+          success: true,
+          soc: data.soc_at_push,
+          remainMode: data.remain_mode,
+          schedule: data.groups || [],
+        })
+      } else {
+        setPreviewResult({ success: false, error: data.detail || 'Preview failed' })
+      }
+    } catch (e) {
+      setPreviewResult({ success: false, error: 'Network error' })
+    } finally {
+      setPreviewing(false)
     }
   }
 
@@ -348,17 +392,69 @@ export default function Home() {
                           <div>
                             <h3 className="font-semibold text-gray-900">Push to Inverter</h3>
                             <p className="text-sm text-gray-500 mt-1">
-                              Send this optimised schedule to your FoxESS inverter. The schedule will be active until the next push or until you change it manually.
+                              Preview the instructions, then send this optimised schedule to your FoxESS inverter. The schedule will be active until the next push or until you change it manually.
                             </p>
                           </div>
-                          <button
-                            onClick={handlePush}
-                            disabled={pushing}
-                            className="bg-green-600 text-white py-2 px-6 rounded-md font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap ml-4"
-                          >
-                            {pushing ? 'Pushing...' : 'Push now'}
-                          </button>
+                          <div className="flex items-center gap-2 ml-4 whitespace-nowrap">
+                            <button
+                              onClick={handlePreview}
+                              disabled={previewing || pushing}
+                              className="bg-blue-600 text-white py-2 px-5 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {previewing ? 'Previewing...' : 'Preview'}
+                            </button>
+                            <button
+                              onClick={handlePush}
+                              disabled={pushing || previewing}
+                              className="bg-green-600 text-white py-2 px-6 rounded-md font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {pushing ? 'Pushing...' : 'Push now'}
+                            </button>
+                          </div>
                         </div>
+
+                        {/* Preview instructions */}
+                        {previewResult && (
+                          <div className="mt-4">
+                            <p className={`text-sm font-medium ${previewResult.success ? 'text-blue-700' : 'text-red-700'}`}>
+{previewResult.success
+                              ? `Preview: ${previewResult.schedule.length} instruction(s) to push (SOC ${previewResult.soc}%) — times in Europe/London${previewResult.remainMode ? ` · remain mode: ${previewResult.remainMode}` : ''}`
+                              : `Error: ${previewResult.error}`}
+                            </p>
+                            {previewResult.success && previewResult.schedule.length > 0 && (
+                              <div className="mt-2 overflow-x-auto">
+                                <table className="text-xs w-full">
+                                  <thead>
+                                    <tr className="border-b border-gray-200">
+                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Time</th>
+                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Mode</th>
+                                      <th className="text-left py-1 text-gray-500 font-medium">Details</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {previewResult.schedule.map((g, i) => (
+                                      <tr key={i} className="border-b border-gray-100">
+                                        <td className="py-1 pr-3 font-mono text-gray-700">{g.start}–{g.end}</td>
+                                        <td className="py-1 pr-3">
+                                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
+                                            g.mode === 'ForceCharge' ? 'bg-blue-100 text-blue-800' :
+                                            g.mode === 'ForceDischarge' ? 'bg-orange-100 text-orange-800' :
+                                            g.mode === 'Feedin' ? 'bg-green-100 text-green-800' :
+                                            'bg-gray-100 text-gray-800'
+                                          }`}>
+                                            {g.mode}
+                                          </span>
+                                        </td>
+                                        <td className="py-1 text-gray-500">{g.description}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {pushResult && (
                           <div className="mt-3">
                             <p className={`text-sm font-medium ${pushResult.success ? 'text-green-700' : 'text-red-700'}`}>

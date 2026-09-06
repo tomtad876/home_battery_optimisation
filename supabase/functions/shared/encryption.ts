@@ -7,7 +7,10 @@
  */
 
 function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
+  // Fernet tokens use URL-safe base64 (- and _). atob() only handles
+  // standard base64 (+ and /), so convert before decoding.
+  const std = b64.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(std);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
@@ -16,7 +19,8 @@ function base64ToBytes(b64: string): Uint8Array {
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary);
+  // Fernet uses URL-safe base64 (- and _) — btoa() produces standard (+ and /)
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {

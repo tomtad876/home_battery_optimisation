@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
 import { Md5 } from "npm:ts-md5";
 import { decryptProviderConfig } from "../shared/encryption.ts";
 import { classifySchedule, OptimiserSlot, ClassifierConfig } from "../shared/classify-schedule.ts";
-import { getDeviceScheduleInfo, sendScheduleToInverter } from "../shared/foxess-schedule.ts";
+import { getDeviceScheduleInfo, getDeviceRemainMode, splitGroupsAtMidnight, sendScheduleToInverter } from "../shared/foxess-schedule.ts";
 
 const FOXESS_BASE_URL = "https://www.foxesscloud.com";
 
@@ -171,13 +171,24 @@ serve(async (req: Request) => {
 
         const groups = classifySchedule(schedule, classifierConfig, now);
 
-        if (groups.length === 0) {
+        // Drop groups matching the device's remain (default) mode — those
+        // instructions are redundant since the inverter already falls back to
+        // that mode in unscheduled gaps.
+        const remainMode = await getDeviceRemainMode(foxessKey, deviceSn);
+        let finalGroups = remainMode
+          ? groups.filter((g: any) => g.workMode !== remainMode)
+          : groups;
+
+        // Split any group that spans midnight (FoxESS rejects cross-midnight periods)
+        finalGroups = splitGroupsAtMidnight(finalGroups);
+
+        if (finalGroups.length === 0) {
           errors.push(`Battery ${battery.id}: no groups after classification`);
           continue;
         }
 
         // 5. Push to inverter
-        const result = await sendScheduleToInverter(foxessKey, deviceSn, groups as any[]);
+        const result = await sendScheduleToInverter(foxessKey, deviceSn, finalGroups as any[]);
 
         // 6. Log to schedules table
         const { data: lastRun } = await client

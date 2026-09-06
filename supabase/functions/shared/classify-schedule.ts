@@ -52,14 +52,23 @@ function classifySlot(
   threshold: number
 ): string {
   const net = slot.net_battery_kwh;
-  const exportKwh = slot.grid_export_kwh;
-  const price = slot.price;
+  const exportKwh = slot.grid_export_kwh ?? 0;
+  const importKwh = slot.grid_import_kwh ?? 0;
+  const price = slot.price ?? 0;
 
   if (net > threshold) {
-    return "ForceCharge";
+    // Charging — from grid (needs ForceCharge) or solar surplus (SelfUse)?
+    if (importKwh > threshold) {
+      return "ForceCharge";
+    }
+    return "SelfUse";
   }
   if (net < -threshold) {
-    return "ForceDischarge";
+    // Discharging — exporting to grid (ForceDischarge) or covering demand (SelfUse)?
+    if (exportKwh > threshold) {
+      return "ForceDischarge";
+    }
+    return "SelfUse";
   }
   // Net near zero — battery idle, but solar exporting to grid
   if (exportKwh > threshold) {
