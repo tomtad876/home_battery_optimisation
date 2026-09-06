@@ -12,9 +12,9 @@ def mvp_cost_minimiser(
     battery_capacity_kwh: float = 15.0,
     initial_soc_pct: float = 50.0,
     min_soc_pct: float = 20.0,
-    max_soc_pct: float = 90.0,
+    max_soc_pct: float = 100.0,
     charge_power_kw: float = 3.0,
-    discharge_power_kw: float = 3.0
+    discharge_power_kw: float = 3.0,
 ) -> pd.DataFrame:
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.
@@ -29,7 +29,6 @@ def mvp_cost_minimiser(
         min_soc_pct, max_soc_pct: Bounds on SOC
         charge_power_kw: Max charge power (kW)
         discharge_power_kw: Max discharge power (kW)
-        export_price_pence: Fixed export price
 
     Returns:
         DataFrame with columns: period_end, demand, pv_estimate, price, batt_charge_kwh,

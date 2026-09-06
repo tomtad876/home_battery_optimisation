@@ -11,19 +11,21 @@ from app.core.encryption import encrypt_provider_config, decrypt_provider_config
 def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
     """Return a merged half-hourly DataFrame for the optimiser.
 
+    Generates a complete half-hourly series from now through tomorrow evening,
+    LEFT JOINs solcast (solar), agile_rates (prices), and historic demand.
+    Overnight periods (no solar) get pv_estimate=0 so the optimiser can see
+    cheap overnight prices and plan accordingly.
+
     Columns returned:
       - period_end: timezone-aware UTC timestamp (half-hour resolution)
-      - pv_estimate: solar energy in kWh for the half-hour
+      - pv_estimate: solar energy in kWh for the half-hour (0 if no forecast)
       - price: import price (pence)
       - demand: demand energy in kWh for the half-hour
-
-    The function builds a half-hour series for the last 7 days, left-joins
-    `solcast_forecast`, `agile_rates`, and an aggregated view of
-    `historic_energy_data` (5-minute -> half-hour), filtered by site_id.
     """
     session = SessionLocal()
     try:
-        sql = text("""WITH five_min AS (
+        sql = text("""
+        WITH five_min AS (
             SELECT 
                 period_end, 
                 SUM(value) AS value_kw
@@ -43,28 +45,33 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
             GROUP BY hh_slot
         ),
 
-        future_half_hours AS (
-            SELECT
-                sf.period_end,
-                sf.solar_kwh,
-                floor(date_part('hour', sf.period_end) * 2 
-                    + date_part('minute', sf.period_end) / 30) AS hh_slot
-            FROM solcast_forecast sf
-            WHERE sf.period_end > now() - interval '30 minutes'
-            AND sf.site_id = :site_id
+        -- Generate complete half-hourly series: now through +36h
+        forecast_series AS (
+            SELECT 
+                gs AS period_end,
+                floor(date_part('hour', gs) * 2 + date_part('minute', gs) / 30) AS hh_slot
+            FROM generate_series(
+                date_trunc('hour', now()) + interval '30 minutes',
+                now() + interval '36 hours',
+                interval '30 minutes'
+            ) gs
         )
 
         SELECT
             f.period_end as period_end,
-            f.solar_kwh AS pv_estimate,
+            COALESCE(sf.solar_kwh, 0.0) AS pv_estimate,
             ar.import_price as price,
             ar.export_price,
-            h.avg_kwh AS demand
-        FROM future_half_hours f
-        JOIN half_hour_history h
+            COALESCE(h.avg_kwh, 0.3) AS demand
+        FROM forecast_series f
+        LEFT JOIN solcast_forecast sf
+            ON sf.period_end = f.period_end
+            AND sf.site_id = :site_id
+        LEFT JOIN half_hour_history h
             ON f.hh_slot = h.hh_slot
-        JOIN agile_rates ar
+        LEFT JOIN agile_rates ar
             ON ar.period_end = f.period_end
+        WHERE ar.import_price IS NOT NULL
         ORDER BY f.period_end;
         """)
         result = session.execute(sql, {"site_id": site_id})

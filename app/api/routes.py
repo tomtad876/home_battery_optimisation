@@ -254,6 +254,9 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token: no user sub")
 
+    if req.min_soc_pct >= req.max_soc_pct:
+        raise HTTPException(status_code=400, detail="min_soc_pct must be less than max_soc_pct")
+
     site = get_user_site(user_id)
     if not site:
         raise HTTPException(status_code=404, detail="No site found. Complete setup first.")
@@ -306,11 +309,11 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
 
 
 class PushScheduleRequest(BaseModel):
-    battery_capacity_kwh: float = 15.0
-    min_soc_pct: float = 20.0
-    max_soc_pct: float = 90.0
-    charge_power_kw: float = 3.0
-    discharge_power_kw: float = 3.0
+    battery_capacity_kwh: float | None = None
+    min_soc_pct: float | None = None
+    max_soc_pct: float | None = None
+    charge_power_kw: float | None = None
+    discharge_power_kw: float | None = None
 
 
 @router.post("/optimise/push")
@@ -341,6 +344,13 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         error = realtime.get("error", "Could not fetch live SOC from FoxESS")
         raise HTTPException(status_code=400, detail=f"Live SOC unavailable: {error}")
 
+    # Use battery config as defaults — don't hardcode
+    batt_capacity = req.battery_capacity_kwh or battery.get("capacity_kwh", 15.0)
+    batt_min_soc = req.min_soc_pct or battery.get("min_soc_pct", 20.0)
+    batt_max_soc = req.max_soc_pct or battery.get("max_soc_pct", 100.0)
+    batt_charge_kw = req.charge_power_kw or battery.get("max_charge_kw", 3.0)
+    batt_discharge_kw = req.discharge_power_kw or battery.get("max_discharge_kw", 3.0)
+
     # 2. Run optimiser
     try:
         inputs = get_optimiser_inputs(str(site["id"]))
@@ -349,12 +359,12 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
 
         schedule = mvp_cost_minimiser(
             inputs_df=inputs,
-            battery_capacity_kwh=req.battery_capacity_kwh,
+            battery_capacity_kwh=batt_capacity,
             initial_soc_pct=soc_pct,
-            min_soc_pct=req.min_soc_pct,
-            max_soc_pct=req.max_soc_pct,
-            charge_power_kw=req.charge_power_kw,
-            discharge_power_kw=req.discharge_power_kw,
+            min_soc_pct=batt_min_soc,
+            max_soc_pct=batt_max_soc,
+            charge_power_kw=batt_charge_kw,
+            discharge_power_kw=batt_discharge_kw,
         )
     except HTTPException:
         raise
@@ -379,9 +389,9 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
             result_df=schedule,
             threshold=0.05,
             from_time=now,
-            min_soc_pct=req.min_soc_pct,
-            max_soc_pct=req.max_soc_pct,
-            rated_power_w=req.charge_power_kw * 1000,
+            min_soc_pct=batt_min_soc,
+            max_soc_pct=batt_max_soc,
+            rated_power_w=batt_charge_kw * 1000,
             local_tz=site.get("timezone", "Europe/London"),
         )
         if len(groups) > max_groups:
