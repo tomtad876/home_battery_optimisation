@@ -1,3 +1,5 @@
+> **Historical** — This README is outdated. See `projects/business/battery-optimisation.md` for current features.
+
 # Battery Optimiser UI
 
 A Next.js frontend for visualizing battery optimisation schedules from the backend API.
@@ -18,7 +20,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 For production (Vercel):
 ```
-NEXT_PUBLIC_API_URL=https://your-api.railway.app
+NEXT_PUBLIC_API_URL=https://home-battery-optimisation.onrender.com
 ```
 
 ### 3. Run Development Server
@@ -30,24 +32,11 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ## Features
 
-- **Battery Configuration Panel** (left sidebar)
-  - PV system ID
-  - Battery capacity & SOC bounds
-  - Power limits (charge/discharge)
-  - Export tariff settings
-
-- **Interactive Charts** (right panel)
-  - **Solar, Demand & Price** – 3-axis line chart showing forecast trends
-  - **State of Charge** – Battery SOC % over time
-  - **Battery Actions** – Charge/discharge dispatch decisions
-  - **Grid Energy** – Import/export flows
-  - **Cumulative Cost** – Running total cost breakdown
-
-- **Summary Cards**
-  - Total cost (£)
-  - Solar generation (kWh)
-  - Total demand (kWh)
-  - Export revenue (£)
+- **Auth**: Supabase JWT login (ES256 + HS256 fallback)
+- **Setup Wizard**: 4-step onboarding (site → battery → tariff → credentials)
+- **Dashboard**: Interactive charts (solar, demand, price, SOC, charge/discharge, grid flows, cumulative cost)
+- **Settings**: Battery config (capacity, power, SOC), API credentials (encrypted), auto-push toggle
+- **Preview**: Run optimiser + classifier without pushing to inverter
 
 ## Architecture
 
@@ -68,9 +57,9 @@ frontend/
 
 ## Dependencies
 
-- **React 18.3** – UI framework
+- **React 18** – UI framework
 - **Next.js 15** – Full-stack framework
-- **Recharts 2.12** – Chart library
+- **Chart.js** – Chart library
 - **Tailwind CSS 3.4** – Utility-first styling
 
 ## Deployment

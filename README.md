@@ -1,4 +1,6 @@
-# Home Battery Optimisation – MVP Backend + Frontend
+> **Historical** — This README is outdated. See `projects/business/battery-optimisation.md` for current status and architecture.
+
+# Home Battery Optimisation
 
 A **FastAPI** backend service to optimise battery charge/discharge schedules, paired with a **Next.js** frontend UI for real-time visualisation.
 
@@ -6,11 +8,12 @@ A **FastAPI** backend service to optimise battery charge/discharge schedules, pa
 
 ```
 Browser (Next.js, Vercel)
-   ↓ /optimise/mvp (POST)
-  Python API (FastAPI, Railway/Fly)
+   ↓ /optimise/mvp (POST)  /  /optimise/push (POST)
+  Python API (FastAPI, Render)
    ↓
 ├─ Solcast API (solar forecast)
-└─ FoxESS API (demand history + Agile prices + battery control)
+├─ FoxESS API (demand history + Agile prices + battery control)
+└─ Supabase Edge Functions (scheduled data fetch + auto-push)
 ```
 
 ## Quick Start (Full Stack)
@@ -60,24 +63,23 @@ npm run dev
 
 ### Backend (Python FastAPI)
 - **`POST /optimise/mvp`** – Compute optimal battery dispatch (LP solver using CVXPY)
+- **`POST /optimise/push`** – Classify + push schedule to FoxESS inverter (preview or live)
+- **`POST /internal/optimise`** – Service-to-service endpoint for Edge Functions
 - **`GET /health`** – Health check
-- 23 comprehensive pytest tests
+- Multi-tenant auth (Supabase JWT, ES256 + HS256 fallback)
+- Encrypted credentials (Fernet AES-128-CBC + HMAC-SHA256)
 - Graceful error handling & validation
 
-### Frontend (Next.js + Recharts)
-- 📊 **5 Interactive Charts**:
-  - Solar, demand, price trends
-  - Battery state of charge (SOC)
-  - Charge/discharge decisions
-  - Grid import/export flows
-  - Cumulative cost tracking
-- ⚙️ **Parameter Control Panel**
-  - Battery capacity, SOC bounds
-  - Power limits, tariff settings
-  - Real-time form validation
-- 💾 **Summary Statistics**
-  - Total cost, solar generation
-  - Grid energy flows
+### Frontend (Next.js + Chart.js)
+- Interactive charts: solar, demand, price, SOC, charge/discharge, grid flows, cumulative cost
+- Setup wizard (4-step: site → battery → tariff → credentials)
+- Settings page: battery config, API credentials, auto-push toggle
+- Auth guard: no login → login, no site → wizard, has site → dashboard
+
+### Edge Functions (Supabase)
+- `fetch-solcast`, `fetch-agile-prices`, `fetch-demand` — scheduled data collection
+- `optimise-and-push` — background cron: fetch SOC → optimise → classify → push to inverter
+- Grid-aware classifier: maps optimiser output to FoxESS v3 schedule groups
 
 ## API Endpoints
 
@@ -148,18 +150,14 @@ pytest --cov=app --cov-report=html
 
 ## Deployment
 
-### Backend (Railway / Fly.io)
+### Backend (Render)
 
-1. **Create Railway/Fly project**
+1. **Connect GitHub repo to Render**
 2. **Set environment variables:**
-   - `SOLCAST_API_KEY`
-   - `FOXESS_API_KEY`
-3. **Deploy:**
-   ```bash
-   railway deploy  # Railway
-   # or
-   flyctl deploy   # Fly.io
-   ```
+   - `SOLCAST_API_KEY`, `FOXESS_API_KEY`
+   - `SUPABASE_URL`, `SUPABASE_JWT_SECRET`
+   - `INTERNAL_API_KEY` (shared secret for Edge Function calls)
+3. **Deploy automatically on push to main**
 
 ### Frontend (Vercel)
 
@@ -174,64 +172,57 @@ pytest --cov=app --cov-report=html
 ```
 home_battery_optimisation/
 ├── app/                          # Backend API
-│   ├── api/routes.py            # FastAPI endpoints
+│   ├── api/routes.py            # FastAPI endpoints (/optimise/mvp, /optimise/push, /internal/optimise)
 │   ├── core/optimiser.py        # LP solver (CVXPY)
 │   ├── services/
 │   │   ├── solcast.py           # Solar forecast
-│   │   ├── foxess.py            # Demand + Agile prices
+│   │   ├── foxess.py            # Demand + Agile prices + classifier
 │   │   └── forecast.py          # Combined helpers
 │   ├── models/                  # SQLAlchemy ORM
 │   ├── schemas/                 # Pydantic models
 │   └── main.py                  # FastAPI app
 ├── tests/                        # pytest suite
+├── supabase/
+│   ├── functions/
+│   │   ├── fetch-solcast/       # Scheduled Solcast fetch
+│   │   ├── fetch-agile-prices/  # Scheduled Agile price fetch
+│   │   ├── fetch-demand/        # Scheduled demand profile fetch
+│   │   ├── optimise-and-push/   # Background optimise + push to inverter
+│   │   └── shared/              # Classifier + FoxESS helpers (TS)
+│   └── migrations/              # Alembic + Supabase migrations
 ├── frontend/                     # Next.js UI
 │   ├── components/
 │   │   ├── OptimiserForm.js     # Parameter form
-│   │   └── ScheduleCharts.js    # Recharts visualisations
+│   │   └── ScheduleCharts.js    # Chart.js visualisations
 │   ├── pages/
-│   │   ├── index.js             # Main page
-│   │   └── _document.js         # App wrapper
+│   │   ├── index.js             # Dashboard
+│   │   ├── settings.js          # Battery config + credentials
+│   │   └── wizard.js            # Setup wizard
 │   ├── styles/globals.css       # Tailwind
 │   └── package.json
+├── alembic/                      # DB migrations
 ├── requirements.txt             # Python dependencies
 └── README.md
 ```
 
-## MVP Scope
+## Current Scope (live on prod 2026-09-06)
 
-- ✅ **Tariff:** Octopus Agile import + Octopus Agile export
+- ✅ **Tariff:** Octopus Agile import + export
 - ✅ **Solar:** Solcast 30-min forecasts
 - ✅ **Demand:** FoxESS 7-day average (time-of-day profile)
 - ✅ **Optimisation:** Linear programming (global optimum, not greedy)
-- ✅ **UI:** Interactive dashboard with 5 charts + parameter controls
-- ✅ **Testing:** 23 comprehensive tests + 100% API coverage
+- ✅ **Push:** Classify + push schedule to FoxESS inverter (manual + auto-push cron)
+- ✅ **Multi-tenant:** Supabase JWT auth, per-user sites/batteries/credentials
+- ✅ **Setup wizard:** 4-step onboarding (site → battery → tariff → credentials)
+- ✅ **Settings:** Battery config, API credentials, auto-push toggle
+- ✅ **Edge Functions:** Scheduled data fetch + background optimise-and-push
 
 ## Known Limitations
 
 - **Demand forecast:** Simple 7-day average. Upgrade to ML (Prophet, LSTM) for better accuracy
 - **Tariff:** No support for Economy 7 or other non-Agile tariff structures yet
 - **Optimiser:** No battery health degradation or thermal constraints
-- **No V2G:** Vehicle-to-grid not supported (future feature)
-
-## Next Steps
-
-### Phase 2: Production Hardening
-- [ ] Persistent storage (save optimisation runs to DB)
-- [ ] User authentication & multi-site support
-- [ ] `/schedule/send` endpoint (program battery directly)
-- [ ] Webhook notifications on price spikes
-- [ ] Historical run comparison
-
-### Phase 3: Advanced Forecasting
-- [ ] ML demand model (Prophet/LSTM)
-- [ ] Weather integration for solar
-- [ ] Octopus regional pricing
-
-### Phase 4: Optimisation Upgrades
-- [ ] Dynamic tariff support (Economy 7)
-- [ ] Battery degradation modeling
-- [ ] Stochastic optimisation (handle forecast uncertainty)
-- [ ] MPC (Model Predictive Control) with receding horizon
+- **Round-trip efficiency:** Currently ignores charge/discharge losses (planned fix)
 
 ## Stack Summary
 
@@ -243,9 +234,8 @@ home_battery_optimisation/
 | Charts | Recharts | Data visualisation |
 | Styling | Tailwind CSS 3.4 | Utility-first CSS |
 | Testing | pytest 9.0 | Backend unit & integration tests |
-| Deployment | Railway/Vercel | Production hosting |
+| Deployment | Render/Vercel/Supabase | Production hosting |
 
 ---
 
-For API details, see [app/README.md](app/README.md).
-For UI setup, see [frontend/README.md](frontend/README.md).
+**Source of truth:** `projects/business/battery-optimisation.md`

@@ -1,20 +1,22 @@
+> **Historical** — This guide is outdated. See `projects/business/battery-optimisation.md` for current setup.
+
 # How to Run Backend + Frontend Locally
 
 ## Prerequisites
 - Python 3.11+ 
 - Node.js 18+
 - Terminal/command line access
-- Valid environment variables (SOLCAST_API_KEY, FOXESS_API_KEY)
+- Valid environment variables (SOLCAST_API_KEY, FOXESS_API_KEY, SUPABASE_URL, SUPABASE_JWT_SECRET)
 
 ## Step 1: Start Backend (Port 8000)
 
 ```bash
 # From project root
-cd c:\Users\Thoma\PycharmProjects\home_battery_optimisation
+cd home_battery_optimisation
 
 # Create/activate venv (if not already done)
 python -m venv venv
-venv\Scripts\activate
+source venv/bin/activate  # Linux/Mac; on Windows: venv\Scripts\activate
 
 # Install deps
 pip install -r requirements.txt
@@ -104,9 +106,9 @@ You should see summary cards with:
 
 ### Port 8000/3000 already in use
 ```bash
-# Free port 8000 (Windows)
-netsh int ipv4 show tcpconn | findstr 8000
-taskkill /PID [PID] /F
+# Find process using the port (Linux/Mac)
+lsof -i :8000
+kill [PID]
 
 # Or use different port
 uvicorn app.main:app --reload --port 8001
@@ -126,12 +128,12 @@ pytest -v
 pytest-watch
 ```
 
-Should see: **23 passed in ~2s**
+Should see all tests passing.
 
 ## Next: Prepare for Production
 
-### Backend Deployment (Railway/Fly)
-See [NEXT_STEPS.md](NEXT_STEPS.md)
+### Backend Deployment (Render)
+See `projects/business/battery-optimisation.md` for deployment steps.
 
 ### Frontend Deployment (Vercel)
 ```bash

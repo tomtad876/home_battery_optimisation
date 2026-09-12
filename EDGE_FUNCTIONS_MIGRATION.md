@@ -1,3 +1,5 @@
+> **Historical** — This migration is complete and live. Kept for reference only.
+
 # Migration from In-App Scheduler to Supabase Edge Functions
 
 ## Summary

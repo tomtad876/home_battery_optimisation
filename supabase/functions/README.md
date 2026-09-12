@@ -1,6 +1,8 @@
-# Supabase Edge Functions for Scheduled Data Collection
+> **Historical** — This README is outdated. See `projects/business/battery-optimisation.md` for current architecture.
 
-This folder contains Supabase Edge Functions to fetch Solcast forecasts, Octopus Agile prices, and demand profiles on a schedule, storing results directly in Supabase without hitting the main API.
+# Supabase Edge Functions
+
+This folder contains Supabase Edge Functions for scheduled data collection, optimisation, and inverter push.
 
 ## Functions
 
@@ -119,9 +121,21 @@ supabase functions get-logs fetch-solcast
 - Validation of data quality before writing (e.g., price sanity checks)
 - Analytics dashboard showing data freshness and API usage
 
+### `optimise-and-push` (Background Optimiser + Inverter Push)
+- **Trigger**: Cron every 30 minutes (when enabled)
+- **Input**: For each battery with `auto_push_enabled=true`:
+  - Fetches live SOC from FoxESS
+  - Calls backend `/internal/optimise` endpoint
+  - Classifies output to FoxESS v3 schedule groups
+  - Pushes to inverter
+  - Logs to `schedules` table
+- **Auth**: `INTERNAL_API_KEY` for backend calls (service-to-service)
+- **Status**: Deployed, cron intentionally not enabled yet (awaiting manual workflow validation)
+
 ## Architecture Notes
 
 - Edge Functions run in Deno (TypeScript/JavaScript) close to the DB
 - Upserts use `period_end` as conflict key to avoid duplicates across multiple function runs
-- The main API (`app/api/routes.py`) will query `current_forecast` view instead of calling external APIs
+- The main API (`app/api/routes.py`) queries stored forecast data via `current_forecast` view
 - Each function is independent and idempotent (safe to call multiple times)
+- Shared helpers in `shared/`: `classify-schedule.ts` (FoxESS classifier), `foxess-schedule.ts` (v3 API push)
