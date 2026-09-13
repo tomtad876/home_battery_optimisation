@@ -1,4 +1,5 @@
 import os
+import time
 from datetime import timedelta, datetime, timezone
 import pandas as pd
 import foxesscloud.openapi as f
@@ -350,6 +351,76 @@ def build_remain_mode_group(remain_mode: str, min_soc_pct: float = 20.0) -> dict
     }
 
 
+# Transient FoxESS errnos that indicate cloud/device contention rather than a
+# real error. 41203 = Operation timed out, 40400 = requests too frequent,
+# 40401 = login too frequent, 44099 = Busy. Safe to retry with a delay.
+TRANSIENT_ERRNOS = {41203, 40400, 40401, 44099}
+
+
+def push_schedule_to_device(
+    api_key: str,
+    device_sn: str,
+    groups: list[dict],
+    enable: bool = True,
+    max_retries: int = 3,
+    retry_delay_s: float = 2.0,
+) -> dict:
+    """Push schedule groups to the device, retrying transient FoxESS errors.
+
+    The foxesscloud ``set_schedule`` swallows failures and returns None, so
+    callers can't tell a transient timeout (41203, common when the FoxESS app
+    is polling the device at the same moment) from a real rejection. This
+    wraps the two-step write (scheduler/enable then scheduler/set/flag) with
+    the library's own signing/delay helpers and retries on transient errnos.
+
+    Returns {"pushed": bool, "errno": int|None, "msg": str|None}.
+    """
+    init_api(api_key)
+    f.device_sn = device_sn
+
+    for attempt in range(max_retries + 1):
+        try:
+            # Step 1: write the schedule groups
+            f.setting_delay()
+            resp = f.signed_post(
+                path="/op/v3/device/scheduler/enable",
+                body={"deviceSN": device_sn, "isDefault": False, "groups": groups},
+            )
+            if resp.status_code != 200:
+                raise RuntimeError(f"scheduler/enable HTTP {resp.status_code}")
+            payload = resp.json()
+            errno = payload.get("errno")
+            if errno != 0:
+                if errno in TRANSIENT_ERRNOS and attempt < max_retries:
+                    time.sleep(retry_delay_s)
+                    continue
+                return {"pushed": False, "errno": errno, "msg": payload.get("msg")}
+
+            # Step 2: enable the schedule flag
+            f.setting_delay()
+            flag_resp = f.signed_post(
+                path="/op/v1/device/scheduler/set/flag",
+                body={"deviceSN": device_sn, "enable": 1 if enable else 0},
+            )
+            if flag_resp.status_code != 200:
+                raise RuntimeError(f"scheduler/set/flag HTTP {flag_resp.status_code}")
+            flag_payload = flag_resp.json()
+            flag_errno = flag_payload.get("errno")
+            if flag_errno != 0:
+                if flag_errno in TRANSIENT_ERRNOS and attempt < max_retries:
+                    time.sleep(retry_delay_s)
+                    continue
+                return {"pushed": False, "errno": flag_errno, "msg": flag_payload.get("msg")}
+
+            return {"pushed": True, "errno": 0, "msg": None}
+        except Exception as e:
+            if attempt >= max_retries:
+                return {"pushed": False, "errno": None, "msg": str(e)}
+            time.sleep(retry_delay_s)
+
+    return {"pushed": False, "errno": None, "msg": "push failed after retries"}
+
+
 def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
     """Split any group that spans midnight into two groups (one per day).
 
@@ -487,13 +558,21 @@ def classify_and_push(
         # breaks remain-mode detection on the next push.
         groups = groups + [build_remain_mode_group(remain_mode or FOXESS_MODE_SELF_USE, min_soc_pct)]
 
-        # Push via foxesscloud library
-        response = f.set_schedule(periods=groups, enable=True)
+        # Push to device (retries transient 41203 "Operation timed out" etc.)
+        result = push_schedule_to_device(api_key, device_sn, groups)
+
+        if not result["pushed"]:
+            errno = result.get("errno")
+            msg = result.get("msg")
+            error = f"errno={errno}" if errno else (msg or "unknown error")
+            if msg and errno:
+                error += f" ({msg})"
+            return {"pushed": False, "groups_sent": 0, "provider_response": None, "error": f"FoxESS push failed: {error}"}
 
         return {
-            "pushed": response is not None,
+            "pushed": True,
             "groups_sent": len(groups) - 1,  # exclude the remain-mode group
-            "provider_response": response,
+            "provider_response": result,
             "remain_mode": remain_mode,
         }
     except Exception as e:

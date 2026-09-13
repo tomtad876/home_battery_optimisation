@@ -326,3 +326,48 @@ class TestRemainModeGroup:
         assert g["workMode"] == "Feedin"
         assert g["isRemainMode"] is True
         assert g["extraParam"]["minSocOnGrid"] == 15
+
+
+class TestPushScheduleRetry:
+    """Test suite for transient FoxESS error retry logic."""
+
+    def _run(self, sequence, max_retries=2):
+        from unittest.mock import patch, MagicMock
+        from app.services.foxess import push_schedule_to_device
+        calls = {"n": 0}
+        def fake_post(path, body=None, login=0):
+            i = calls["n"]; calls["n"] += 1
+            resp = MagicMock()
+            resp.status_code = 200
+            e = sequence[min(i, len(sequence) - 1)]
+            resp.json.return_value = {"errno": e, "msg": f"errno {e}"}
+            return resp
+        with patch("app.services.foxess.f.signed_post", side_effect=fake_post), \
+             patch("app.services.foxess.f.setting_delay"), \
+             patch("app.services.foxess.time.sleep"):
+            return push_schedule_to_device("k", "sn", [{"a": 1}], max_retries=max_retries, retry_delay_s=0.01)
+
+    def test_success_first_try(self):
+        r = self._run([0, 0])
+        assert r["pushed"] is True
+
+    def test_transient_then_success(self):
+        # 41203 on the enable call, then success
+        r = self._run([41203, 0, 0])
+        assert r["pushed"] is True
+
+    def test_persistent_transient_fails(self):
+        r = self._run([41203])
+        assert r["pushed"] is False
+        assert r["errno"] == 41203
+
+    def test_flag_step_transient(self):
+        # enable ok, flag returns 40400 (too frequent), then success
+        r = self._run([0, 40400, 0, 0])
+        assert r["pushed"] is True
+
+    def test_non_transient_error_fails_immediately(self):
+        # 41935 = device offline — not transient, fail fast
+        r = self._run([41935])
+        assert r["pushed"] is False
+        assert r["errno"] == 41935

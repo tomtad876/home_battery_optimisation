@@ -423,10 +423,17 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
             # Always include the device's remain-mode group. set_schedule
             # replaces the whole schedule — pushing without it wipes the remain
             # mode and breaks remain-mode detection on the next push.
-            from app.services.foxess import build_remain_mode_group
+            from app.services.foxess import build_remain_mode_group, push_schedule_to_device
             groups = groups + [build_remain_mode_group(remain_mode or "SelfUse", batt_min_soc)]
-            # Push to device
-            _f.set_schedule(periods=groups, enable=True)
+            # Push to device (retries transient 41203 "Operation timed out" etc.)
+            result = push_schedule_to_device(foxess_key, device_sn, groups)
+            if not result["pushed"]:
+                err = result.get("errno")
+                msg = result.get("msg")
+                detail = f"FoxESS push failed: errno={err}" if err else f"FoxESS push failed: {msg or 'unknown error'}"
+                if msg:
+                    detail += f" ({msg})"
+                raise HTTPException(status_code=502, detail=detail)
             pushed = True
     except Exception as e:
         groups = []

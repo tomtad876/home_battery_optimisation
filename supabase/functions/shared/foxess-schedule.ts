@@ -187,8 +187,16 @@ export async function disableSchedule(
   }
 }
 
+// Transient FoxESS errnos indicating cloud/device contention (safe to retry):
+// 41203 = Operation timed out, 40400 = requests too frequent, 44099 = Busy.
+const TRANSIENT_ERRNOS = new Set([41203, 40400, 44099]);
+const PUSH_MAX_RETRIES = 3;
+const PUSH_RETRY_DELAY_MS = 2000;
+
 /**
- * Push schedule groups to the device and enable it.
+ * Push schedule groups to the device and enable it, retrying transient
+ * FoxESS errors (e.g. 41203 "Operation timed out" when the cloud/app is
+ * polling the device at the same moment).
  *
  * @param groups - Array of FoxESS schedule group objects (from classifySchedule)
  */
@@ -197,33 +205,49 @@ export async function pushSchedule(
   deviceSn: string,
   groups: Array<Record<string, any>>
 ): Promise<any> {
-  // 1. Push groups
-  const pushResp = await foxessPost(
-    "/op/v3/device/scheduler/enable",
-    apiKey,
-    { deviceSN: deviceSn, isDefault: false, groups }
-  );
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-  if (!pushResp.ok || pushResp.data?.errno !== 0) {
-    throw new Error(
-      `Failed to push schedule groups: HTTP ${pushResp.status}, errno ${pushResp.data?.errno}`
+  for (let attempt = 0; attempt <= PUSH_MAX_RETRIES; attempt++) {
+    // 1. Push groups
+    const pushResp = await foxessPost(
+      "/op/v3/device/scheduler/enable",
+      apiKey,
+      { deviceSN: deviceSn, isDefault: false, groups }
     );
+
+    if (!pushResp.ok || pushResp.data?.errno !== 0) {
+      const errno = pushResp.data?.errno;
+      if (TRANSIENT_ERRNOS.has(errno) && attempt < PUSH_MAX_RETRIES) {
+        await sleep(PUSH_RETRY_DELAY_MS);
+        continue;
+      }
+      throw new Error(
+        `Failed to push schedule groups: HTTP ${pushResp.status}, errno ${errno}`
+      );
+    }
+
+    // 2. Enable the schedule
+    const enableResp = await foxessPost(
+      "/op/v1/device/scheduler/set/flag",
+      apiKey,
+      { deviceSN: deviceSn, enable: 1 }
+    );
+
+    if (!enableResp.ok || enableResp.data?.errno !== 0) {
+      const errno = enableResp.data?.errno;
+      if (TRANSIENT_ERRNOS.has(errno) && attempt < PUSH_MAX_RETRIES) {
+        await sleep(PUSH_RETRY_DELAY_MS);
+        continue;
+      }
+      throw new Error(
+        `Failed to enable schedule: HTTP ${enableResp.status}, errno ${errno}`
+      );
+    }
+
+    return pushResp.data;
   }
 
-  // 2. Enable the schedule
-  const enableResp = await foxessPost(
-    "/op/v1/device/scheduler/set/flag",
-    apiKey,
-    { deviceSN: deviceSn, enable: 1 }
-  );
-
-  if (!enableResp.ok || enableResp.data?.errno !== 0) {
-    throw new Error(
-      `Failed to enable schedule: HTTP ${enableResp.status}, errno ${enableResp.data?.errno}`
-    );
-  }
-
-  return pushResp.data;
+  throw new Error("Failed to push schedule after retries");
 }
 
 /**
