@@ -6,6 +6,7 @@ from app.services.foxess import (
     classify_optimiser_output,
     _merge_groups,
     split_groups_at_midnight,
+    build_remain_mode_group,
     FOXESS_MODE_SELF_USE,
     FOXESS_MODE_FORCE_CHARGE,
     FOXESS_MODE_FORCE_DISCHARGE,
@@ -115,6 +116,80 @@ class TestClassifier:
             start_h = g["startHour"]
             assert start_h >= 5
 
+    def test_max_hours_caps_instruction_window(self):
+        """max_hours=24 should truncate output to one full day (FoxESS has no date)."""
+        # 36h of charging (72 slots) — optimiser horizon can exceed 24h
+        schedule = _make_schedule([(1.5, 0.0, 1.5)] * 72)
+        from_time = datetime(2026, 9, 6, 0, 0, tzinfo=timezone.utc)
+        groups = classify_optimiser_output(schedule, from_time=from_time, max_hours=24.0, local_tz="UTC")
+        # One group covering exactly 24h: 00:00 → 00:00 (next day)
+        assert len(groups) == 1
+        assert groups[0]["startHour"] == 0 and groups[0]["startMinute"] == 0
+        assert groups[0]["endHour"] == 0 and groups[0]["endMinute"] == 0
+
+    def test_max_hours_none_keeps_full_horizon(self):
+        """max_hours=None should keep the full optimiser horizon."""
+        schedule = _make_schedule([(1.5, 0.0, 1.5)] * 72)
+        from_time = datetime(2026, 9, 6, 0, 0, tzinfo=timezone.utc)
+        groups = classify_optimiser_output(schedule, from_time=from_time, max_hours=None, local_tz="UTC")
+        # Without cap the single charge group extends to the end of the 36h
+        # horizon → last period_end 11:30 next day
+        assert len(groups) == 1
+        assert groups[0]["endHour"] == 11 and groups[0]["endMinute"] == 30
+
+    def test_group_started_before_now_clipped_to_now(self):
+        """A group already in progress (started before from_time) is sent from from_time onwards."""
+        # Two discharge slots: 18:00–18:30 and 18:30–19:00 UTC (period_ends 18:30, 19:00); now is 18:10
+        periods = pd.date_range("2026-09-06 18:30", periods=2, freq="30min", tz="UTC")
+        df = pd.DataFrame([
+            {"period_end": periods[0], "net_battery_kwh": -0.4, "grid_export_kwh": 0.4,
+             "grid_import_kwh": 0.0, "soc_pct": 60.0, "demand": 0.1, "pv_estimate": 0.0, "price": 40.0},
+            {"period_end": periods[1], "net_battery_kwh": -0.4, "grid_export_kwh": 0.4,
+             "grid_import_kwh": 0.0, "soc_pct": 50.0, "demand": 0.1, "pv_estimate": 0.0, "price": 40.0},
+        ])
+        from_time = datetime(2026, 9, 6, 18, 10, tzinfo=timezone.utc)
+        groups = classify_optimiser_output(df, from_time=from_time, max_hours=24.0, local_tz="UTC")
+        discharge = [g for g in groups if g["workMode"] == FOXESS_MODE_FORCE_DISCHARGE]
+        assert len(discharge) == 1
+        # Starts at 18:10 (clipped from 18:00), ends 19:00
+        assert discharge[0]["startHour"] == 18 and discharge[0]["startMinute"] == 10
+        assert discharge[0]["endHour"] == 19 and discharge[0]["endMinute"] == 0
+
+    def test_group_past_cutoff_dropped(self):
+        """A group starting tomorrow after the cutoff (from_time+24h) is dropped entirely."""
+        # Discharge slot tomorrow 19:00–19:30 UTC, but cutoff is 18:10 tomorrow
+        periods = pd.date_range("2026-09-07 19:00", periods=1, freq="30min", tz="UTC")
+        df = pd.DataFrame([
+            {"period_end": periods[0], "net_battery_kwh": -0.4, "grid_export_kwh": 0.4,
+             "grid_import_kwh": 0.0, "soc_pct": 50.0, "demand": 0.1, "pv_estimate": 0.0, "price": 40.0},
+        ])
+        from_time = datetime(2026, 9, 6, 18, 10, tzinfo=timezone.utc)
+        groups = classify_optimiser_output(df, from_time=from_time, max_hours=24.0, local_tz="UTC")
+        discharge = [g for g in groups if g["workMode"] == FOXESS_MODE_FORCE_DISCHARGE]
+        assert len(discharge) == 0
+
+    def test_group_crossing_cutoff_clipped_at_cutoff(self):
+        """A group straddling the cutoff is cut at from_time+24h (18:10 tomorrow)."""
+        # Discharge 17:30–19:00 tomorrow UTC (period_ends 18:00, 18:30, 19:00);
+        # cutoff at 18:10 tomorrow
+        periods = pd.date_range("2026-09-07 18:00", periods=3, freq="30min", tz="UTC")
+        rows = [
+            {"period_end": periods[0], "net_battery_kwh": -0.4, "grid_export_kwh": 0.4,
+             "grid_import_kwh": 0.0, "soc_pct": 60.0, "demand": 0.1, "pv_estimate": 0.0, "price": 40.0},
+            {"period_end": periods[1], "net_battery_kwh": -0.4, "grid_export_kwh": 0.4,
+             "grid_import_kwh": 0.0, "soc_pct": 55.0, "demand": 0.1, "pv_estimate": 0.0, "price": 40.0},
+            {"period_end": periods[2], "net_battery_kwh": -0.4, "grid_export_kwh": 0.4,
+             "grid_import_kwh": 0.0, "soc_pct": 50.0, "demand": 0.1, "pv_estimate": 0.0, "price": 40.0},
+        ]
+        df = pd.DataFrame(rows)
+        from_time = datetime(2026, 9, 6, 18, 10, tzinfo=timezone.utc)
+        groups = classify_optimiser_output(df, from_time=from_time, max_hours=24.0, local_tz="UTC")
+        discharge = [g for g in groups if g["workMode"] == FOXESS_MODE_FORCE_DISCHARGE]
+        assert len(discharge) == 1
+        # Starts 17:30 (17h30), clipped to end at 18:10
+        assert discharge[0]["startHour"] == 17 and discharge[0]["startMinute"] == 30
+        assert discharge[0]["endHour"] == 18 and discharge[0]["endMinute"] == 10
+
     def test_empty_schedule_returns_empty(self):
         """Empty input should return empty groups."""
         schedule = pd.DataFrame(columns=["period_end", "net_battery_kwh", "grid_export_kwh", "soc_pct", "demand", "pv_estimate", "price"])
@@ -157,6 +232,9 @@ class TestClassifier:
         # maxSoc rounds 36 up to 40; power = 0.8kWh / 1h = 0.8kW -> 800W
         assert ep["maxSoc"] == 40
         assert ep["fdPwr"] == 800
+        # fdSoc doubles as the device "Charging cut-off" — must equal maxSoc,
+        # not min_soc (the FoxESS reference library defaults fdSoc to maxSoc).
+        assert ep["fdSoc"] == 40
 
     def test_force_discharge_keeps_reserve(self):
         """ForceDischarge should set fdSoc to leave reserve and size power to energy/time."""
@@ -230,3 +308,21 @@ class TestSplitMidnight:
         # end 00:00 == start 22:00 in day terms; end <= start → spans midnight
         out = split_groups_at_midnight([g])
         assert len(out) == 2
+
+
+class TestRemainModeGroup:
+    """Test suite for the full-day remain-mode group preserved on push."""
+
+    def test_build_remain_mode_group_full_day(self):
+        g = build_remain_mode_group("SelfUse", min_soc_pct=20.0)
+        assert g["startHour"] == 0 and g["startMinute"] == 0
+        assert g["endHour"] == 23 and g["endMinute"] == 59
+        assert g["workMode"] == "SelfUse"
+        assert g["isRemainMode"] is True
+        assert g["extraParam"]["minSocOnGrid"] == 20
+
+    def test_build_remain_mode_group_custom_mode_and_soc(self):
+        g = build_remain_mode_group("Feedin", min_soc_pct=15.0)
+        assert g["workMode"] == "Feedin"
+        assert g["isRemainMode"] is True
+        assert g["extraParam"]["minSocOnGrid"] == 15

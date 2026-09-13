@@ -43,6 +43,13 @@ export interface ClassifierConfig {
   supportedModes: string[];
   /** IANA timezone for the device (default: Europe/London) */
   localTimezone?: string;
+  /**
+   * Max instruction window in hours (default: 24). FoxESS schedule period
+   * times have no date, so instructions spanning more than 24h duplicate
+   * clock times and get rejected by the API. The optimiser still plans over
+   * its full horizon; this caps what gets pushed.
+   */
+  maxHours?: number;
 }
 
 const THRESHOLD_DEFAULT = 0.05;
@@ -160,7 +167,10 @@ function buildExtraParam(
   switch (mode) {
     case "ForceCharge": {
       params.maxSoc = Math.round(config.maxSocPct);
-      params.fdSoc = minSoc;
+      // fdSoc doubles as the "Charging cut-off" on the device — the FoxESS
+      // reference library defaults fdSoc to maxSoc for ForceCharge. Setting it
+      // to minSoc (as we used to) made the app show a 20% charge cutoff.
+      params.fdSoc = Math.round(config.maxSocPct);
       params.fdPwr = config.ratedPowerW;
       break;
     }
@@ -196,11 +206,25 @@ export function classifySchedule(
   fromTime?: Date
 ): FoxESSGroup[] {
   const threshold = config.threshold || THRESHOLD_DEFAULT;
+  const maxHours = config.maxHours ?? 24;
 
-  // Filter to future slots only if fromTime provided
+  // Window bounds in ms (UTC). Groups are clipped to [fromTime, fromTime+maxHours).
+  const windowStartMs = fromTime ? fromTime.getTime() : null;
+  const windowEndMs = windowStartMs !== null ? windowStartMs + maxHours * 60 * 60 * 1000 : null;
+
+  // Keep slots that overlap the window: some time after fromTime and starting
+  // before the window end. This keeps the slot containing "now" so a
+  // mid-instruction can be clipped to start at fromTime, and the slot that
+  // straddles the cutoff so it can be clipped to end there.
   let relevant = slots;
-  if (fromTime) {
-    relevant = slots.filter((s) => new Date(s.period_end) > fromTime);
+  if (windowStartMs !== null) {
+    relevant = slots.filter((s) => {
+      const endMs = new Date(s.period_end).getTime();
+      const startMs = endMs - 30 * 60 * 1000; // back 30 min
+      if (endMs <= windowStartMs) return false;
+      if (windowEndMs !== null && startMs >= windowEndMs) return false;
+      return true;
+    });
   }
 
   if (relevant.length === 0) return [];
@@ -226,13 +250,25 @@ export function classifySchedule(
 
   // 5. Build FoxESS groups (in local time — FoxESS device uses device-local timezone)
   const tz = config.localTimezone || "Europe/London";
-  return merged.map((group) => {
+  const out: (FoxESSGroup | null)[] = merged.map((group) => {
     const startSlot = relevant[group.start];
     const endSlot = relevant[group.end];
 
     const startPeriodEnd = new Date(startSlot.period_end);
     const startTime = new Date(startPeriodEnd.getTime() - 30 * 60 * 1000); // back 30 min
     const endPeriodEnd = new Date(endSlot.period_end);
+
+    // Clip group to the exact instruction window. A group that started before
+    // fromTime is sent from fromTime onwards; one extending past the window
+    // end is cut there; one fully outside (e.g. starting tomorrow after the
+    // cutoff) is dropped.
+    let startMs = startTime.getTime();
+    let endMs = endPeriodEnd.getTime();
+    if (windowStartMs !== null) startMs = Math.max(startMs, windowStartMs);
+    if (windowEndMs !== null) endMs = Math.min(endMs, windowEndMs);
+    if (endMs <= startMs) return null;
+    const clippedStart = new Date(startMs);
+    const clippedEnd = new Date(endMs);
 
     // Convert to local time using Intl
     const fmt = new Intl.DateTimeFormat("en-GB", {
@@ -241,8 +277,8 @@ export function classifySchedule(
       minute: "numeric",
       hour12: false,
     });
-    const startParts = fmt.formatToParts(startTime);
-    const endParts = fmt.formatToParts(endPeriodEnd);
+    const startParts = fmt.formatToParts(clippedStart);
+    const endParts = fmt.formatToParts(clippedEnd);
     const getVal = (parts: Intl.DateTimeFormatPart[], type: string) =>
       parseInt(parts.find((p) => p.type === type)?.value || "0", 10);
 
@@ -256,4 +292,6 @@ export function classifySchedule(
       extraParam: buildExtraParam(group.mode, config),
     };
   });
+
+  return out.filter((g) => g !== null) as FoxESSGroup[];
 }

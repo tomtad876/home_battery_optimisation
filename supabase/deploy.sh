@@ -7,9 +7,14 @@ cd "$(dirname "$0")/.." || exit 1
 echo "Deploying Supabase Edge Functions..."
 echo ""
 
+# NOTE: --no-verify-jwt is required for all functions invoked by pg_cron.
+# The cron uses a legacy HS256 service-role JWT that the function gateway
+# rejects under verify_jwt (2026-09-13 incident: fetch-agile-prices silently
+# 401'd for days while cron logged "succeeded"). Keep the flag on all crons.
+
 # Deploy Solcast function
 echo "1. Deploying fetch-solcast..."
-supabase functions deploy fetch-solcast
+supabase functions deploy fetch-solcast --no-verify-jwt
 if [ $? -eq 0 ]; then
   echo "✓ fetch-solcast deployed"
 else
@@ -21,7 +26,7 @@ echo ""
 
 # Deploy Agile Prices function
 echo "2. Deploying fetch-agile-prices..."
-supabase functions deploy fetch-agile-prices
+supabase functions deploy fetch-agile-prices --no-verify-jwt
 if [ $? -eq 0 ]; then
   echo "✓ fetch-agile-prices deployed"
 else
@@ -33,11 +38,23 @@ echo ""
 
 # Deploy Demand function
 echo "3. Deploying fetch-demand..."
-supabase functions deploy fetch-demand
+supabase functions deploy fetch-demand --no-verify-jwt
 if [ $? -eq 0 ]; then
   echo "✓ fetch-demand deployed"
 else
   echo "✗ fetch-demand deployment failed"
+  exit 1
+fi
+
+echo ""
+
+# Deploy Optimise-and-push function
+echo "4. Deploying optimise-and-push..."
+supabase functions deploy optimise-and-push --no-verify-jwt
+if [ $? -eq 0 ]; then
+  echo "✓ optimise-and-push deployed"
+else
+  echo "✗ optimise-and-push deployment failed"
   exit 1
 fi
 

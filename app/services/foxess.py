@@ -152,6 +152,7 @@ def classify_optimiser_output(
     result_df: pd.DataFrame,
     threshold: float = 0.05,
     from_time: datetime | None = None,
+    max_hours: float | None = 24.0,
     min_soc_pct: float = 10.0,
     max_soc_pct: float = 100.0,
     rated_power_w: float = 3000.0,
@@ -165,6 +166,17 @@ def classify_optimiser_output(
     The FoxESS device operates in local time, so all period times are
     converted from UTC to local_tz before extracting hours/minutes.
 
+    max_hours caps the instruction window: FoxESS schedule period times have
+    no date, so instructions spanning more than 24h produce overlapping slot
+    times and an API error. The optimiser still plans over its full horizon
+    (e.g. 36h); this only truncates what gets pushed to the inverter.
+
+    The window is [from_time, from_time + max_hours) and groups are clipped
+    to it exactly: a group that started before from_time starts at from_time,
+    a group that extends past the window end is cut there, and a group that
+    would start at/after the window end is dropped. Pass max_hours=None to
+    disable the cap.
+
     Returns a list of FoxESS v3 period dicts ready for set_schedule().
     """
     import zoneinfo
@@ -177,11 +189,29 @@ def classify_optimiser_output(
         if col not in df.columns:
             df[col] = 0.0
 
+    # Window bounds (UTC-aware). Groups are clipped to these exactly.
+    window_start = None
+    window_end = None
     if from_time is not None:
+        ft = pd.Timestamp(from_time)
+        if ft.tzinfo is None:
+            ft = ft.tz_localize("UTC")
+        window_start = ft
+        if max_hours is not None:
+            window_end = ft + timedelta(hours=max_hours)
+
         if "period_end" in df.columns:
-            # Only keep slots whose START time is in the future (not just period_end)
-            start_cutoff = pd.Timestamp(from_time) + timedelta(minutes=30)
-            df = df[pd.to_datetime(df["period_end"], utc=True) > start_cutoff].reset_index(drop=True)
+            pe = pd.to_datetime(df["period_end"], utc=True)
+            slot_start = pe - timedelta(minutes=30)
+            # Keep any slot that overlaps the window: some time after from_time
+            # and starting before the window end. This keeps the slot that
+            # contains "now" so a mid-instruction can be clipped to start at
+            # from_time, and the slot that straddles the cutoff so it can be
+            # clipped to end there.
+            keep = pe > window_start
+            if window_end is not None:
+                keep = keep & (slot_start < window_end)
+            df = df[keep].reset_index(drop=True)
 
     if df.empty:
         return []
@@ -230,10 +260,24 @@ def classify_optimiser_output(
         # Convert from UTC to local time for FoxESS device
         start_utc = pd.to_datetime(start_row["period_end"], utc=True) - timedelta(minutes=30)
         end_utc = pd.to_datetime(end_row["period_end"], utc=True)
+
+        # Clip group to the exact instruction window [from_time, from_time+max_hours).
+        # A group that started before now is sent from now onwards; a group that
+        # extends past the window end is cut there; a group fully outside the
+        # window (e.g. starting tomorrow after the cutoff) is dropped.
+        if window_start is not None:
+            start_utc = max(start_utc, window_start)
+        if window_end is not None:
+            end_utc = min(end_utc, window_end)
+        if end_utc <= start_utc:
+            continue
+
         start_local = start_utc.to_pydatetime().astimezone(tz)
         end_local = end_utc.to_pydatetime().astimezone(tz)
 
-        duration_h = len(grp) * 0.5
+        # Duration in hours of the CLIPPED group (a group clipped at its start
+        # has less time to move the scheduled energy, so power must be sized up).
+        duration_h = max((end_utc - start_utc).total_seconds() / 3600.0, 0.5 / 60.0)
 
         # Per-group force params: size the charge/discharge to what the
         # optimiser actually scheduled, instead of blasting full power and
@@ -244,15 +288,16 @@ def classify_optimiser_output(
         if mode == FOXESS_MODE_FORCE_CHARGE and "soc_pct" in grp.columns:
             # maxSoc = highest SOC this charge period reaches (rounded up 5%)
             grp_max_soc = min(max_soc_pct, _round_soc_up(grp["soc_pct"].max()))
-            # Power = energy to move / time available, rounded up to 100W
+            # Power = energy to move / time available, rounded up to 100W,
+            # capped at the device's rated power (clipping can shrink duration).
             energy = grp["net_battery_kwh"].sum()
-            grp_power = _round_power_w(energy / duration_h)
+            grp_power = min(rated_power_w, _round_power_w(energy / duration_h))
         elif mode == FOXESS_MODE_FORCE_DISCHARGE and "soc_pct" in grp.columns:
             # fdSoc = lowest SOC reached in this period (rounded DOWN 5%) so
             # we keep reserve for SelfUse after the forced discharge ends
             grp_min_soc = max(min_soc_pct, _round_soc_down(grp["soc_pct"].min()))
             energy = (-grp["net_battery_kwh"]).sum()
-            grp_power = _round_power_w(energy / duration_h)
+            grp_power = min(rated_power_w, _round_power_w(energy / duration_h))
 
         # Build v3 period dict directly (no foxesscloud dependency)
         period = _build_v3_period(
@@ -285,6 +330,24 @@ def get_device_remain_mode(api_key: str, device_sn: str) -> str | None:
         return None
     except Exception:
         return None
+
+
+def build_remain_mode_group(remain_mode: str, min_soc_pct: float = 20.0) -> dict:
+    """Build the full-day (00:00-23:59) remain-mode group for a schedule push.
+
+    Must be included in every set_schedule call: the API replaces the whole
+    schedule, so pushing without it wipes the device's remain mode and breaks
+    remain-mode detection on the next push (the intermittent-filter bug).
+    """
+    return {
+        "startHour": 0,
+        "startMinute": 0,
+        "endHour": 23,
+        "endMinute": 59,
+        "workMode": remain_mode,
+        "isRemainMode": True,
+        "extraParam": {"minSocOnGrid": round(min_soc_pct)},
+    }
 
 
 def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
@@ -349,7 +412,10 @@ def _build_v3_period(
 
     if mode == FOXESS_MODE_FORCE_CHARGE:
         period["extraParam"]["maxSoc"] = round(max_soc_pct)
-        period["extraParam"]["fdSoc"] = min_soc
+        # fdSoc doubles as the "Charging cut-off" on the device — the FoxESS
+        # reference library defaults fdSoc to maxSoc for ForceCharge. Setting
+        # it to min_soc (as we used to) made the app show a 20% charge cutoff.
+        period["extraParam"]["fdSoc"] = round(max_soc_pct)
         period["extraParam"]["fdPwr"] = int(rated_power_w)
     elif mode == FOXESS_MODE_FORCE_DISCHARGE:
         period["extraParam"]["fdSoc"] = min_soc
@@ -367,6 +433,7 @@ def classify_and_push(
     max_soc_pct: float = 90.0,
     rated_power_w: float = 3000.0,
     from_time: datetime | None = None,
+    max_hours: float | None = 24.0,
 ) -> dict:
     """Full push sequence: init API → classify → push to device.
 
@@ -392,6 +459,7 @@ def classify_and_push(
             result_df,
             threshold=0.05,
             from_time=from_time,
+            max_hours=max_hours,
             min_soc_pct=min_soc_pct,
             max_soc_pct=max_soc_pct,
             rated_power_w=rated_power_w,
@@ -402,26 +470,29 @@ def classify_and_push(
 
         # Drop groups matching the device's remain mode (redundant — the
         # inverter already defaults to that mode in unscheduled gaps).
-        remain_mode = get_device_remain_mode(api_key, device_sn)
-        if remain_mode:
-            groups = [g for g in groups if g.get("workMode") != remain_mode]
+        # Fall back to SelfUse (FoxESS default) if the device can't report it —
+        # e.g. right after a push that wiped the remain-mode group.
+        remain_mode = get_device_remain_mode(api_key, device_sn) or FOXESS_MODE_SELF_USE
+        groups = [g for g in groups if g.get("workMode") != remain_mode]
 
         # Split any group that spans midnight (FoxESS rejects cross-midnight periods)
         groups = split_groups_at_midnight(groups)
 
-        if not groups:
-            return {"pushed": False, "groups_sent": 0, "provider_response": None, "error": "No schedule groups to push after filtering"}
+        # Merge if over device limit (leave room for the remain-mode group)
+        if len(groups) > max_groups - 1:
+            groups = _merge_groups(groups, max_groups - 1)
 
-        # Merge if over device limit
-        if len(groups) > max_groups:
-            groups = _merge_groups(groups, max_groups)
+        # Always include the device's remain-mode group. set_schedule replaces
+        # the whole schedule — pushing without it wipes the remain mode and
+        # breaks remain-mode detection on the next push.
+        groups = groups + [build_remain_mode_group(remain_mode or FOXESS_MODE_SELF_USE, min_soc_pct)]
 
         # Push via foxesscloud library
         response = f.set_schedule(periods=groups, enable=True)
 
         return {
             "pushed": response is not None,
-            "groups_sent": len(groups),
+            "groups_sent": len(groups) - 1,  # exclude the remain-mode group
             "provider_response": response,
             "remain_mode": remain_mode,
         }

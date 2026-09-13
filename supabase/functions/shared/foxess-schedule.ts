@@ -147,6 +147,28 @@ export function splitGroupsAtMidnight<T extends { startHour: number; startMinute
 }
 
 /**
+ * Build the full-day (00:00-23:59) remain-mode group for a schedule push.
+ *
+ * Must be included in every push: the API replaces the whole schedule, so
+ * pushing without it wipes the device's remain mode and breaks remain-mode
+ * detection on the next push (the intermittent-filter bug).
+ */
+export function buildRemainModeGroup(
+  remainMode: string,
+  minSocPct: number = 20.0
+): Record<string, any> {
+  return {
+    startHour: 0,
+    startMinute: 0,
+    endHour: 23,
+    endMinute: 59,
+    workMode: remainMode,
+    isRemainMode: true,
+    extraParam: { minSocOnGrid: Math.round(minSocPct) },
+  };
+}
+
+/**
  * Disable the schedule on the device.
  */
 export async function disableSchedule(

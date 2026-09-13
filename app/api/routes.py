@@ -395,6 +395,7 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
             result_df=schedule,
             threshold=0.05,
             from_time=now,
+            max_hours=24.0,
             min_soc_pct=batt_min_soc,
             max_soc_pct=batt_max_soc,
             rated_power_w=batt_charge_kw * 1000,
@@ -404,20 +405,26 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         # If the device's remain (default) mode matches a classified mode, that
         # instruction is redundant — the inverter already falls back to that mode
         # in gaps. Drop groups matching the remain mode, keep everything else.
-        remain_mode = get_device_remain_mode(foxess_key, device_sn)
-        if remain_mode:
-            groups = [g for g in groups if g.get("workMode") != remain_mode]
+        # Fall back to SelfUse (FoxESS default) if the device can't report it —
+        # e.g. right after a push that wiped the remain-mode group.
+        remain_mode = get_device_remain_mode(foxess_key, device_sn) or "SelfUse"
+        groups = [g for g in groups if g.get("workMode") != remain_mode]
 
         # Split any group that spans midnight (FoxESS rejects cross-midnight periods)
         groups = split_groups_at_midnight(groups)
 
-        if len(groups) > max_groups:
-            groups = _merge_groups(groups, max_groups)
+        if len(groups) > max_groups - 1:
+            groups = _merge_groups(groups, max_groups - 1)
 
         if req.preview:
             # Preview mode: classify and return groups without pushing
             pushed = False
         else:
+            # Always include the device's remain-mode group. set_schedule
+            # replaces the whole schedule — pushing without it wipes the remain
+            # mode and breaks remain-mode detection on the next push.
+            from app.services.foxess import build_remain_mode_group
+            groups = groups + [build_remain_mode_group(remain_mode or "SelfUse", batt_min_soc)]
             # Push to device
             _f.set_schedule(periods=groups, enable=True)
             pushed = True
@@ -429,9 +436,12 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
     if not pushed and not req.preview:
         raise HTTPException(status_code=502, detail=f"FoxESS push failed: {push_error}")
 
-    # Build human-readable summary of each group
+    # Build human-readable summary of each group (exclude the implicit
+    # full-day remain-mode group — it's reported separately as remain_mode)
     group_summaries = []
     for g in groups:
+        if g.get("isRemainMode"):
+            continue
         mode = g.get("workMode", "?")
         start = f"{g['startHour']:02d}:{g['startMinute']:02d}"
         end = f"{g['endHour']:02d}:{g['endMinute']:02d}"
@@ -453,7 +463,7 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         "status": "success",
         "pushed": pushed if not req.preview else False,
         "preview": req.preview,
-        "groups_sent": len(groups),
+        "groups_sent": len(group_summaries),
         "soc_at_push": soc_pct,
         "generated_at": now.isoformat(),
         "remain_mode": remain_mode if req.preview else None,
