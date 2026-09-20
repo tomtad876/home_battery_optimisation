@@ -3,6 +3,11 @@ from sqlalchemy import Column, DateTime, Float, String, ForeignKey, text
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
+# Register the `sites` table in SQLAlchemy's metadata so the FK below resolves.
+# The app's data layer is otherwise raw SQL (data_provider.py), so `Site` is not
+# imported anywhere else and the FK would otherwise raise NoReferencedTableError.
+from app.models.site import Site  # noqa: F401
+
 
 class DemandEvent(Base):
     """A labelled appliance/activity event on household demand.

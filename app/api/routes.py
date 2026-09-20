@@ -12,6 +12,9 @@ from app.services.data_provider import (
     update_battery_config, get_battery_realtime
 )
 from app.services.foxess import classify_optimiser_output, _merge_groups, classify_and_push
+from app.services.event_detector import detect_events
+from app.models.demandevent import DemandEvent
+from app.core.database import SessionLocal
 
 router = APIRouter()
 
@@ -591,3 +594,152 @@ def internal_optimise(req: InternalOptimiseRequest, _: dict = Depends(verify_int
         "status": "success",
         "schedule": schedule.to_dict(orient="records"),
     }
+
+
+# --- Demand events (appliance labelling) ---
+
+class CreateEventRequest(BaseModel):
+    appliance: str
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    status: str = "confirmed"
+    energy_kwh: Optional[float] = None
+    source: str = "manual"
+    notes: Optional[str] = None
+
+
+class UpdateEventRequest(BaseModel):
+    appliance: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    status: Optional[str] = None
+    energy_kwh: Optional[float] = None
+    source: Optional[str] = None
+    notes: Optional[str] = None
+
+
+def _to_utc(dt: datetime) -> datetime:
+    from zoneinfo import ZoneInfo
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=ZoneInfo("Europe/London")).astimezone(timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _event_to_dict(e: DemandEvent) -> dict:
+    return {
+        "id": str(e.id),
+        "site_id": str(e.site_id),
+        "appliance": e.appliance,
+        "start_time": e.start_time.isoformat() if e.start_time else None,
+        "end_time": e.end_time.isoformat() if e.end_time else None,
+        "status": e.status,
+        "energy_kwh": e.energy_kwh,
+        "source": e.source,
+        "notes": e.notes,
+    }
+
+
+def _get_site_id(user: dict):
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found. Complete setup first.")
+    return site["id"]
+
+
+@router.get("/events")
+def list_events(user: dict = Depends(verify_token)):
+    """List the user's labelled demand events (newest first)."""
+    site_id = _get_site_id(user)
+    session = SessionLocal()
+    try:
+        events = (
+            session.query(DemandEvent)
+            .filter(DemandEvent.site_id == site_id)
+            .order_by(DemandEvent.start_time.desc())
+            .all()
+        )
+        return {"events": [_event_to_dict(e) for e in events]}
+    finally:
+        session.close()
+
+
+@router.get("/events/detect")
+def get_detected_events(days: int = 7, user: dict = Depends(verify_token)):
+    """Detect candidate appliance events (floor-baseline residual) for review."""
+    site_id = _get_site_id(user)
+    return {"events": detect_events(str(site_id), days=days)}
+
+
+@router.post("/events")
+def create_event(req: CreateEventRequest, user: dict = Depends(verify_token)):
+    site_id = _get_site_id(user)
+    session = SessionLocal()
+    try:
+        e = DemandEvent(
+            site_id=site_id,
+            appliance=req.appliance,
+            start_time=_to_utc(req.start_time),
+            end_time=_to_utc(req.end_time) if req.end_time else None,
+            status=req.status,
+            energy_kwh=req.energy_kwh,
+            source=req.source,
+            notes=req.notes,
+        )
+        session.add(e)
+        session.commit()
+        session.refresh(e)
+        return {"event": _event_to_dict(e)}
+    finally:
+        session.close()
+
+
+@router.patch("/events/{event_id}")
+def update_event(event_id: str, req: UpdateEventRequest, user: dict = Depends(verify_token)):
+    import uuid as _uuid
+    site_id = _get_site_id(user)
+    session = SessionLocal()
+    try:
+        try:
+            e = session.get(DemandEvent, _uuid.UUID(event_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Event not found")
+        if not e:
+            raise HTTPException(status_code=404, detail="Event not found")
+        if str(e.site_id) != str(site_id):
+            raise HTTPException(status_code=403, detail="Not your event")
+        data = req.model_dump(exclude_unset=True)
+        if data.get("start_time") is not None:
+            data["start_time"] = _to_utc(data["start_time"])
+        if "end_time" in data:
+            data["end_time"] = _to_utc(data["end_time"]) if data["end_time"] is not None else None
+        for k, v in data.items():
+            setattr(e, k, v)
+        session.commit()
+        session.refresh(e)
+        return {"event": _event_to_dict(e)}
+    finally:
+        session.close()
+
+
+@router.delete("/events/{event_id}")
+def delete_event(event_id: str, user: dict = Depends(verify_token)):
+    import uuid as _uuid
+    site_id = _get_site_id(user)
+    session = SessionLocal()
+    try:
+        try:
+            e = session.get(DemandEvent, _uuid.UUID(event_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Event not found")
+        if not e:
+            raise HTTPException(status_code=404, detail="Event not found")
+        if str(e.site_id) != str(site_id):
+            raise HTTPException(status_code=403, detail="Not your event")
+        session.delete(e)
+        session.commit()
+        return {"deleted": event_id}
+    finally:
+        session.close()

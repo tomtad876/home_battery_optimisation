@@ -333,6 +333,7 @@ export default function Home() {
               <div className="flex items-center justify-between mb-6">
                 <p className="text-sm text-gray-600">Signed in as <span className="font-medium">{user?.email}</span></p>
                 <div className="flex items-center gap-4">
+                  <a href="/events" className="text-sm text-blue-600 hover:text-blue-800">Events</a>
                   <a href="/settings" className="text-sm text-blue-600 hover:text-blue-800">Settings</a>
                   <button onClick={handleLogout} className="text-sm text-red-600 hover:text-red-800">Sign out</button>
                 </div>
