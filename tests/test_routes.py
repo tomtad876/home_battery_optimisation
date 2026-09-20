@@ -25,6 +25,32 @@ def mock_user_site():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def mock_user_battery():
+    """Mock get_user_battery so /optimise/mvp doesn't hit the real DB."""
+    with patch('app.api.routes.get_user_battery') as mock:
+        mock.return_value = {
+            "id": "test-battery-id",
+            "site_id": "test-site-id",
+            "capacity_kwh": 5.0,
+            "max_charge_kw": 3.0,
+            "max_discharge_kw": 3.0,
+            "min_soc_pct": 20.0,
+            "max_soc_pct": 100.0,
+            "provider_type": "foxess",
+            "provider_config": {},
+        }
+        yield mock
+
+
+@pytest.fixture(autouse=True)
+def mock_realtime():
+    """Mock get_battery_realtime so /optimise/mvp's SOC fallback doesn't hit FoxESS."""
+    with patch('app.api.routes.get_battery_realtime') as mock:
+        mock.return_value = {"soc_pct": 50.0, "history": []}
+        yield mock
+
+
 @pytest.fixture
 def client():
     """FastAPI test client."""
@@ -169,3 +195,63 @@ class TestOptimiserRoute:
         }
         response = client.post("/optimise/mvp", json=request_data)
         assert response.status_code == 400
+
+    @patch('app.api.routes.mvp_cost_minimiser')
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_reads_saved_battery_row(self, mock_inputs, mock_optimiser, client, mock_user_battery):
+        """An empty body must use the saved battery row, not hardcoded defaults."""
+        mock_inputs.return_value = pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
+            "pv_estimate": [0.0, 0.5, 1.0, 0.3],
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "export_price": [6.0, 4.8, 20.0, 8.0],
+            "demand": [0.5, 0.5, 0.5, 0.5]
+        })
+        mock_optimiser.return_value = pd.DataFrame({
+            "cost_gbp": [1.0, 2.0],
+            "pv_estimate": [0.5, 0.5],
+            "demand": [0.5, 0.5],
+            "grid_import_kwh": [0.0, 0.0],
+            "grid_export_kwh": [0.0, 0.0],
+            "export_price": [6.0, 6.0],
+        })
+        # A battery that is NOT the historical 5 kWh / 3 kW default.
+        mock_user_battery.return_value = {
+            "id": "test-battery-id",
+            "site_id": "test-site-id",
+            "capacity_kwh": 10.0,
+            "max_charge_kw": 4.0,
+            "max_discharge_kw": 4.0,
+            "min_soc_pct": 30.0,
+            "max_soc_pct": 95.0,
+            "provider_type": "foxess",
+            "provider_config": {},
+        }
+
+        response = client.post("/optimise/mvp", json={})
+        assert response.status_code == 200
+
+        kwargs = mock_optimiser.call_args.kwargs
+        assert kwargs["battery_capacity_kwh"] == 10.0
+        assert kwargs["min_soc_pct"] == 30.0
+        assert kwargs["max_soc_pct"] == 95.0
+        assert kwargs["charge_power_kw"] == 4.0
+        assert kwargs["discharge_power_kw"] == 4.0
+        # initial SOC falls back to live SOC from the (mocked) realtime call
+        assert kwargs["initial_soc_pct"] == 50.0
+
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_requires_initial_soc(self, mock_inputs, client, mock_realtime):
+        """With no initial SOC and no live SOC, refuse rather than guess 50%."""
+        mock_inputs.return_value = pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
+            "pv_estimate": [0.0, 0.5, 1.0, 0.3],
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "export_price": [6.0, 4.8, 20.0, 8.0],
+            "demand": [0.5, 0.5, 0.5, 0.5]
+        })
+        mock_realtime.return_value = {"soc_pct": None, "history": [], "error": "no FoxESS creds"}
+
+        response = client.post("/optimise/mvp", json={})
+        assert response.status_code == 400
+        assert "Initial SOC required" in response.json()["detail"]

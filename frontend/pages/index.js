@@ -1,9 +1,9 @@
 import Head from 'next/head'
-import OptimiserForm from '@/components/OptimiserForm'
 import ScheduleCharts from '@/components/ScheduleCharts'
 import AuthForm from '@/components/AuthForm'
 import SetupWizard from '@/components/SetupWizard'
 import { supabase } from '@/lib/supabaseClient'
+import { apiFetch, friendlyError } from '@/lib/api'
 import { useState, useEffect, useRef, useCallback } from 'react'
 
 export default function Home() {
@@ -14,6 +14,10 @@ export default function Home() {
   const [user, setUser] = useState(null)
   const [site, setSite] = useState(null)
   const [siteLoading, setSiteLoading] = useState(true)
+  const [siteError, setSiteError] = useState(null)
+  const [serverWaking, setServerWaking] = useState(false)
+  const [manualSoc, setManualSoc] = useState('')
+  const [lastRunAt, setLastRunAt] = useState(null)
   const [realtimeData, setRealtimeData] = useState({ soc_pct: null, history: [], fetchedAt: null })
   const [dayPrices, setDayPrices] = useState([])
   const [pushing, setPushing] = useState(false)
@@ -23,31 +27,30 @@ export default function Home() {
   const checkedSessionRef = useRef(false)
   const autoRanRef = useRef(false)
 
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
   const fetchRealtime = useCallback(async (accessToken) => {
     try {
-      const resp = await fetch(`${apiUrl}/battery/realtime`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` },
+      const data = await apiFetch('/battery/realtime', { accessToken })
+      setRealtimeData({
+        ...data,
+        error: data?.error ?? null,
+        fetchedAt: new Date().toISOString(),
       })
-      if (resp.ok) {
-        const data = await resp.json()
-        setRealtimeData({ ...data, fetchedAt: new Date().toISOString() })
-      }
-    } catch {
-      // Silently fail — fallback to manual SOC input
+    } catch (err) {
+      // Surface the failure — the dashboard renders realtimeData.error. Swallowing
+      // it used to leave auto-optimise waiting on a SOC that never arrived, with
+      // a placeholder and no explanation.
+      setRealtimeData((prev) => ({
+        ...prev,
+        error: friendlyError(err, 'Live battery data unavailable.'),
+      }))
     }
-    // Also fetch today's prices
+    // Also fetch today's prices (chart decoration — the optimiser result already
+    // carries prices, so a failure here is not worth surfacing)
     try {
-      const resp = await fetch(`${apiUrl}/tariff/prices`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` },
-      })
-      if (resp.ok) {
-        const data = await resp.json()
-        setDayPrices(data.prices || [])
-      }
+      const data = await apiFetch('/tariff/prices', { accessToken })
+      setDayPrices(data?.prices || [])
     } catch {}
-  }, [apiUrl])
+  }, [])
 
   const checkSite = useCallback(async (accessToken) => {
     if (!accessToken) {
@@ -55,47 +58,46 @@ export default function Home() {
       setSiteLoading(false)
       return
     }
+    setSiteError(null)
     try {
-      const res = await fetch(`${apiUrl}/sites/me`, {
-        headers: { 'Authorization': `Bearer ${accessToken}` },
+      const data = await apiFetch('/sites/me', {
+        accessToken,
+        // Three attempts (~95s worst case) so a sleeping backend recovers on its
+        // own. The loading copy says what's happening while it waits.
+        retries: 2,
+        onRetry: () => setServerWaking(true),
       })
-      if (res.ok) {
-        const data = await res.json()
-        setSite(data.site)
+      setSite(data?.site ?? null)
+      if (data?.site) {
         fetchRealtime(accessToken)
-      } else {
-        setSite(null)
       }
-    } catch {
+    } catch (err) {
       setSite(null)
+      // 404 is the documented "no site yet" answer → send them to the wizard.
+      // Anything else (timeout, network, 5xx) is a server problem, not a setup
+      // problem; showing the wizard there would push an existing user back
+      // through onboarding.
+      if (err?.status !== 404) {
+        setSiteError(friendlyError(err, 'Could not load your site.'))
+      }
     } finally {
       setSiteLoading(false)
+      setServerWaking(false)
     }
-  }, [apiUrl])
+  }, [fetchRealtime])
 
   const handleOptimise = async (params) => {
     setLoading(true)
     setError(null)
+    setServerWaking(false)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      const headers = { 'Content-Type': 'application/json' }
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`
-      }
-      const response = await fetch(`${apiUrl}/optimise/mvp`, {
+      const data = await apiFetch('/optimise/mvp', {
         method: 'POST',
-        headers,
-        body: JSON.stringify(params),
+        body: params,
+        accessToken: session?.access_token,
+        onRetry: () => setServerWaking(true),
       })
-      if (!response.ok) {
-        const errorData = await response.json()
-        const msg = errorData.detail || 'Optimisation failed'
-        if (msg.includes('NO_DATA')) {
-          throw new Error('no_data')
-        }
-        throw new Error(msg)
-      }
-      const data = await response.json()
       setSummary(data.summary)
       const normalized = (data.schedule || []).map((r) => ({
         period_end: r.PeriodEnd ?? r.period_end,
@@ -111,10 +113,15 @@ export default function Home() {
         export_price: r.export_price ?? r.export_price_pence ?? null,
       }))
       setSchedule(normalized)
+      setLastRunAt(
+        new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' })
+      )
     } catch (err) {
-      setError(err.message)
+      const message = friendlyError(err, 'Optimisation failed.')
+      setError(message.includes('NO_DATA') ? 'no_data' : message)
     } finally {
       setLoading(false)
+      setServerWaking(false)
     }
   }
 
@@ -127,34 +134,22 @@ export default function Home() {
         setPreviewResult({ success: false, error: 'Not logged in' })
         return
       }
-      const resp = await fetch(`${apiUrl}/optimise/push`, {
+      const data = await apiFetch('/optimise/push', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          battery_capacity_kwh: 5.0,
-          min_soc_pct: 20.0,
-          max_soc_pct: 100.0,
-          charge_power_kw: 3.0,
-          discharge_power_kw: 3.0,
-          preview: true,
-        }),
+        accessToken: session.access_token,
+        // Send only what the backend cannot infer. Battery parameters come from
+        // the saved battery row (routes.py:348-353) — hardcoding them here
+        // silently mis-optimised any user whose battery isn't 5 kWh / 3 kW.
+        body: { preview: true },
       })
-      const data = await resp.json()
-      if (resp.ok) {
-        setPreviewResult({
-          success: true,
-          soc: data.soc_at_push,
-          remainMode: data.remain_mode,
-          schedule: data.groups || [],
-        })
-      } else {
-        setPreviewResult({ success: false, error: data.detail || 'Preview failed' })
-      }
-    } catch (e) {
-      setPreviewResult({ success: false, error: 'Network error' })
+      setPreviewResult({
+        success: true,
+        soc: data.soc_at_push,
+        remainMode: data.remain_mode,
+        schedule: data.groups || [],
+      })
+    } catch (err) {
+      setPreviewResult({ success: false, error: friendlyError(err, 'Preview failed.') })
     } finally {
       setPreviewing(false)
     }
@@ -169,33 +164,23 @@ export default function Home() {
         setPushResult({ success: false, error: 'Not logged in' })
         return
       }
-      const resp = await fetch(`${apiUrl}/optimise/push`, {
+      const data = await apiFetch('/optimise/push', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          battery_capacity_kwh: 5.0,
-          min_soc_pct: 20.0,
-          max_soc_pct: 100.0,
-          charge_power_kw: 3.0,
-          discharge_power_kw: 3.0,
-        }),
+        accessToken: session.access_token,
+        // Battery params from the saved battery row (see handlePreview).
+        body: {},
+        // Never retry a live push: a client-side timeout may mean the schedule
+        // already reached the inverter, and a blind retry would push twice.
+        retryUnsafe: false,
       })
-      const data = await resp.json()
-      if (resp.ok) {
-        setPushResult({
-          success: true,
-          groups: data.groups_sent,
-          soc: data.soc_at_push,
-          schedule: data.groups || [],
-        })
-      } else {
-        setPushResult({ success: false, error: data.detail || 'Push failed' })
-      }
-    } catch (e) {
-      setPushResult({ success: false, error: 'Network error' })
+      setPushResult({
+        success: true,
+        groups: data.groups_sent,
+        soc: data.soc_at_push,
+        schedule: data.groups || [],
+      })
+    } catch (err) {
+      setPushResult({ success: false, error: friendlyError(err, 'Push failed.') })
     } finally {
       setPushing(false)
     }
@@ -244,14 +229,9 @@ export default function Home() {
   useEffect(() => {
     if (site && realtimeData.soc_pct !== null && !autoRanRef.current && !loading && !schedule) {
       autoRanRef.current = true
-      handleOptimise({
-        battery_capacity_kwh: 5.0,
-        initial_soc_pct: realtimeData.soc_pct,
-        min_soc_pct: 20.0,
-        max_soc_pct: 100.0,
-        charge_power_kw: 3.0,
-        discharge_power_kw: 3.0,
-      })
+      // Only the initial SOC is genuinely unknown to the backend — the rest comes
+      // from the saved battery row.
+      handleOptimise({ initial_soc_pct: realtimeData.soc_pct })
     }
   }, [site, realtimeData.soc_pct])
 
@@ -265,6 +245,22 @@ export default function Home() {
         checkSite(data.session.access_token)
       }
     })
+  }
+
+  const retrySite = async () => {
+    setSiteLoading(true)
+    const { data } = await supabase.auth.getSession()
+    await checkSite(data?.session?.access_token)
+  }
+
+  const hasLiveSoc = realtimeData.soc_pct !== null && realtimeData.soc_pct !== undefined
+
+  // Manual (re-)run. Battery config comes from the saved battery row on the
+  // backend — the only thing it cannot know is where the battery is right now,
+  // so that's the one field offered here.
+  const runOptimiser = () => {
+    const soc = hasLiveSoc ? realtimeData.soc_pct : manualSoc === '' ? null : Number(manualSoc)
+    handleOptimise(soc === null || Number.isNaN(soc) ? {} : { initial_soc_pct: soc })
   }
 
   const formatNumber = (v, decimals) => {
@@ -296,13 +292,32 @@ export default function Home() {
           {/* Logged in, loading site check */}
           {user && siteLoading && (
             <div className="text-center py-12">
-              <p className="text-gray-500">Loading...</p>
+              <p className="text-gray-500">
+                {serverWaking ? 'Still waking the server — retrying…' : 'Connecting…'}
+              </p>
+              <p className="text-gray-400 text-sm mt-2">
+                The server sleeps when idle, so the first request can take up to a minute.
+              </p>
+            </div>
+          )}
+
+          {/* Logged in, site check failed for a reason that isn't "no site yet" */}
+          {user && !siteLoading && siteError && (
+            <div className="max-w-md mx-auto bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+              <p className="text-red-800 font-medium">Could not load your site</p>
+              <p className="text-red-700 text-sm mt-2">{siteError}</p>
+              <button
+                onClick={retrySite}
+                className="mt-4 bg-red-600 text-white py-2 px-5 rounded-md font-medium hover:bg-red-700"
+              >
+                Try again
+              </button>
             </div>
           )}
 
           {/* Logged in, no site → setup wizard */}
-          {user && !siteLoading && !site && (
-            <SetupWizard apiUrl={apiUrl} onComplete={handleSetupComplete} />
+          {user && !siteLoading && !site && !siteError && (
+            <SetupWizard onComplete={handleSetupComplete} />
           )}
 
           {/* Logged in, has site → dashboard */}
@@ -316,20 +331,52 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-                {/* Form Panel */}
-                <div className="lg:col-span-1">
-                  <div className="bg-white rounded-lg shadow p-6 sticky top-4">
-                    <OptimiserForm onSubmit={handleOptimise} loading={loading} defaultSoc={realtimeData.soc_pct} />
+              {/* Run controls. Battery config (capacity, power limits, SOC bounds)
+                  lives in Settings; the backend reads it, so there is nothing to
+                  configure here — only "where is the battery right now", which it
+                  cannot know without live data. */}
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-6 bg-white rounded-lg shadow px-4 py-3">
+                  <div className="text-sm text-gray-600">
+                    {hasLiveSoc ? (
+                      <span>
+                        Live SOC <span className="font-medium text-gray-900">{formatNumber(realtimeData.soc_pct, 0)}%</span>
+                      </span>
+                    ) : (
+                      <span className="text-gray-500">Live SOC unavailable</span>
+                    )}
+                    {lastRunAt && <span className="text-gray-400"> · optimised {lastRunAt}</span>}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {!hasLiveSoc && (
+                      <label className="text-sm text-gray-600 flex items-center gap-2">
+                        Initial SOC %
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={manualSoc}
+                          onChange={(e) => setManualSoc(e.target.value)}
+                          placeholder="50"
+                          className="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+                        />
+                      </label>
+                    )}
+                    <button
+                      onClick={runOptimiser}
+                      disabled={loading || (!hasLiveSoc && manualSoc === '')}
+                      title={!hasLiveSoc && manualSoc === '' ? 'Enter an initial SOC % first' : undefined}
+                      className="bg-blue-600 text-white py-2 px-5 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {loading ? 'Optimising…' : schedule ? 'Re-run optimiser' : 'Run optimiser'}
+                    </button>
                   </div>
                 </div>
 
-                {/* Results Panel */}
-                <div className="lg:col-span-3">
+                <div>
                   {realtimeData.error && (
                     <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
                       <p className="text-yellow-800"><strong>Live battery data unavailable:</strong> {realtimeData.error}</p>
-                      <p className="text-yellow-700 text-sm mt-1">You can still optimise manually using the form.</p>
+                      <p className="text-yellow-700 text-sm mt-1">Set an initial SOC above and run the optimiser manually.</p>
                     </div>
                   )}
 
@@ -501,11 +548,12 @@ export default function Home() {
 
                   {!schedule && !loading && !error && (
                     <div className="bg-white rounded-lg shadow p-12 text-center">
-                      <p className="text-gray-500 text-lg">Enter parameters and click <strong>Optimise</strong> to see the schedule</p>
+                      <p className="text-gray-500 text-lg">
+                        {hasLiveSoc ? 'Optimising…' : 'Enter an initial SOC and run the optimiser to see the schedule'}
+                      </p>
                     </div>
                   )}
                 </div>
-              </div>
             </>
           )}
         </div>
