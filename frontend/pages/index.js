@@ -1,5 +1,4 @@
 import Head from 'next/head'
-import OptimiserForm from '@/components/OptimiserForm'
 import ScheduleCharts from '@/components/ScheduleCharts'
 import AuthForm from '@/components/AuthForm'
 import SetupWizard from '@/components/SetupWizard'
@@ -17,6 +16,8 @@ export default function Home() {
   const [siteLoading, setSiteLoading] = useState(true)
   const [siteError, setSiteError] = useState(null)
   const [serverWaking, setServerWaking] = useState(false)
+  const [manualSoc, setManualSoc] = useState('')
+  const [lastRunAt, setLastRunAt] = useState(null)
   const [realtimeData, setRealtimeData] = useState({ soc_pct: null, history: [], fetchedAt: null })
   const [dayPrices, setDayPrices] = useState([])
   const [pushing, setPushing] = useState(false)
@@ -114,6 +115,9 @@ export default function Home() {
         export_price: r.export_price ?? r.export_price_pence ?? null,
       }))
       setSchedule(normalized)
+      setLastRunAt(
+        new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' })
+      )
     } catch (err) {
       const message = friendlyError(err, 'Optimisation failed.')
       setError(message.includes('NO_DATA') ? 'no_data' : message)
@@ -251,6 +255,16 @@ export default function Home() {
     await checkSite(data?.session?.access_token)
   }
 
+  const hasLiveSoc = realtimeData.soc_pct !== null && realtimeData.soc_pct !== undefined
+
+  // Manual (re-)run. Battery config comes from the saved battery row on the
+  // backend — the only thing it cannot know is where the battery is right now,
+  // so that's the one field offered here.
+  const runOptimiser = () => {
+    const soc = hasLiveSoc ? realtimeData.soc_pct : manualSoc === '' ? null : Number(manualSoc)
+    handleOptimise(soc === null || Number.isNaN(soc) ? {} : { initial_soc_pct: soc })
+  }
+
   const formatNumber = (v, decimals) => {
     if (v === undefined || v === null || Number.isNaN(Number(v))) return (0).toFixed(decimals)
     return Number(v).toFixed(decimals)
@@ -319,20 +333,51 @@ export default function Home() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-                {/* Form Panel */}
-                <div className="lg:col-span-1">
-                  <div className="bg-white rounded-lg shadow p-6 sticky top-4">
-                    <OptimiserForm onSubmit={handleOptimise} loading={loading} defaultSoc={realtimeData.soc_pct} />
+              {/* Run controls. Battery config (capacity, power limits, SOC bounds)
+                  lives in Settings; the backend reads it, so there is nothing to
+                  configure here — only "where is the battery right now", which it
+                  cannot know without live data. */}
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-6 bg-white rounded-lg shadow px-4 py-3">
+                  <div className="text-sm text-gray-600">
+                    {hasLiveSoc ? (
+                      <span>
+                        Live SOC <span className="font-medium text-gray-900">{formatNumber(realtimeData.soc_pct, 0)}%</span>
+                      </span>
+                    ) : (
+                      <span className="text-gray-500">Live SOC unavailable</span>
+                    )}
+                    {lastRunAt && <span className="text-gray-400"> · optimised {lastRunAt}</span>}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {!hasLiveSoc && (
+                      <label className="text-sm text-gray-600 flex items-center gap-2">
+                        Initial SOC %
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={manualSoc}
+                          onChange={(e) => setManualSoc(e.target.value)}
+                          placeholder="50"
+                          className="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+                        />
+                      </label>
+                    )}
+                    <button
+                      onClick={runOptimiser}
+                      disabled={loading}
+                      className="bg-blue-600 text-white py-2 px-5 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {loading ? 'Optimising…' : schedule ? 'Re-run optimiser' : 'Run optimiser'}
+                    </button>
                   </div>
                 </div>
 
-                {/* Results Panel */}
-                <div className="lg:col-span-3">
+                <div>
                   {realtimeData.error && (
                     <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
                       <p className="text-yellow-800"><strong>Live battery data unavailable:</strong> {realtimeData.error}</p>
-                      <p className="text-yellow-700 text-sm mt-1">You can still optimise manually using the form.</p>
+                      <p className="text-yellow-700 text-sm mt-1">Set an initial SOC above and run the optimiser manually.</p>
                     </div>
                   )}
 
@@ -504,11 +549,12 @@ export default function Home() {
 
                   {!schedule && !loading && !error && (
                     <div className="bg-white rounded-lg shadow p-12 text-center">
-                      <p className="text-gray-500 text-lg">Enter parameters and click <strong>Optimise</strong> to see the schedule</p>
+                      <p className="text-gray-500 text-lg">
+                        {hasLiveSoc ? 'Optimising…' : 'Enter an initial SOC and run the optimiser to see the schedule'}
+                      </p>
                     </div>
                   )}
                 </div>
-              </div>
             </>
           )}
         </div>
