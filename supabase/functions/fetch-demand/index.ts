@@ -44,65 +44,63 @@ serve(async (req: Request) => {
         const now = new Date();
         const intervals = [];
 
-        // Fetch last 2 days of demand history (runs daily — no need for a full week)
-        for (let i = 1; i >= 0; i--) {
-          const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-          const dayStr = day.toISOString().slice(0, 10);
+        // Fetch the last 4 hours of history in a single call. Runs every 15 min
+        // via cron, so a 4h window self-heals any gap shorter than 4h while
+        // keeping FoxESS usage at 1 call/run (~96/day vs the 1440 calls/day
+        // per-inverter limit).
+        const path = "/op/v0/device/history/query";
+        const timestamp = Date.now();
+        const signature = Md5.hashStr(`${path}\\r\\n${foxessKey}\\r\\n${timestamp.toString()}`);
+        const headers = {
+          "Content-Type": "application/json",
+          signature,
+          token: foxessKey,
+          timestamp: timestamp.toString(),
+          lang: "en"
+        };
 
-          const path = "/op/v0/device/history/query";
-          const timestamp = Date.now();
-          const signature = Md5.hashStr(`${path}\\r\\n${foxessKey}\\r\\n${timestamp.toString()}`);
-          const headers = {
-            "Content-Type": "application/json",
-            signature,
-            token: foxessKey,
-            timestamp: timestamp.toString(),
-            lang: "en"
-          };
+        const beginMs = now.getTime() - 4 * 60 * 60 * 1000;
+        const endMs = now.getTime();
+        const body = {
+          sn: deviceSn,
+          variables: ['generationPower', 'feedinPower', 'loadsPower', 'gridConsumptionPower', 'batChargePower', 'batDischargePower', 'pvPower', 'meterPower2'],
+          begin: beginMs,
+          end: endMs
+        };
 
-          const beginDate = new Date(dayStr + "T00:00:00Z");
-          const endDate = new Date(dayStr + "T23:59:59Z");
-          const body = {
-            sn: deviceSn,
-            variables: ['generationPower', 'feedinPower', 'loadsPower', 'gridConsumptionPower', 'batChargePower', 'batDischargePower', 'pvPower', 'meterPower2'],
-            begin: beginDate.getTime(),
-            end: endDate.getTime()
-          };
+        const foxessResp = await fetch("https://www.foxesscloud.com" + path, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body)
+        });
 
-          const foxessResp = await fetch("https://www.foxesscloud.com" + path, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body)
-          });
+        if (!foxessResp.ok) {
+          console.log(`fetch-demand: FoxESS API error for site ${battery.site_id}:`, foxessResp.status);
+          continue;
+        }
 
-          if (!foxessResp.ok) {
-            console.log(`fetch-demand: FoxESS API error for ${dayStr} site ${battery.site_id}:`, foxessResp.status);
-            continue;
-          }
+        const foxessData = await foxessResp.json();
+        const result = foxessData?.result?.[0]?.datas || [];
 
-          const foxessData = await foxessResp.json();
-          const result = foxessData?.result?.[0]?.datas || [];
-
-          for (const entry of result) {
-            const variable = entry?.variable;
-            const unit = entry?.unit;
-            const name = entry?.name;
-            const dataArr = entry?.data || [];
-            for (const d of dataArr) {
-              const value = d?.value;
-              const time = d?.time;
-              if (value == null || !time) continue;
-              intervals.push({
-                id: crypto.randomUUID(),
-                period_end: time,
-                variable,
-                unit,
-                name,
-                value,
-                time,
-                site_id: battery.site_id,
-              });
-            }
+        for (const entry of result) {
+          const variable = entry?.variable;
+          const unit = entry?.unit;
+          const name = entry?.name;
+          const dataArr = entry?.data || [];
+          for (const d of dataArr) {
+            const value = d?.value;
+            const time = d?.time;
+            if (value == null || !time) continue;
+            intervals.push({
+              id: crypto.randomUUID(),
+              period_end: time,
+              variable,
+              unit,
+              name,
+              value,
+              time,
+              site_id: battery.site_id,
+            });
           }
         }
 
