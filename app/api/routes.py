@@ -15,6 +15,32 @@ from app.services.foxess import classify_optimiser_output, _merge_groups, classi
 
 router = APIRouter()
 
+# Canonical battery defaults. Fallbacks only — the saved battery row is the
+# source of truth; these apply when a user has no battery row yet or a field is
+# missing. Matches Tom's 5 kWh / 3 kW setup (the only real device today) and the
+# docs (RUN_LOCALLY.md, README.md).
+DEFAULT_BATTERY = {
+    "capacity_kwh": 5.0,
+    "max_charge_kw": 3.0,
+    "max_discharge_kw": 3.0,
+    "min_soc_pct": 20.0,
+    "max_soc_pct": 100.0,
+}
+
+
+def _resolve_battery_param(req_value, battery, key):
+    """Explicit request value wins, else the saved battery row, else the default.
+
+    Uses `is not None` (not truthiness) so an explicit 0 survives — e.g. a user
+    who genuinely wants min_soc_pct=0 rather than the default 20.
+    """
+    if req_value is not None:
+        return req_value
+    if battery and battery.get(key) is not None:
+        return battery.get(key)
+    return DEFAULT_BATTERY[key]
+
+
 @router.get("/health")
 def health():
     return {"status": "ok"}
@@ -235,12 +261,12 @@ def get_realtime(user: dict = Depends(verify_token)):
 
 class MVPOptimiseRequest(BaseModel):
     pv_system_id: str | None = None
-    battery_capacity_kwh: float = 5.0
-    initial_soc_pct: float = 50.0
-    min_soc_pct: float = 20.0
-    max_soc_pct: float = 100.0
-    charge_power_kw: float = 3.0
-    discharge_power_kw: float = 3.0
+    battery_capacity_kwh: float | None = None
+    initial_soc_pct: float | None = None
+    min_soc_pct: float | None = None
+    max_soc_pct: float | None = None
+    charge_power_kw: float | None = None
+    discharge_power_kw: float | None = None
 
 
 
@@ -254,12 +280,36 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token: no user sub")
 
-    if req.min_soc_pct >= req.max_soc_pct:
-        raise HTTPException(status_code=400, detail="min_soc_pct must be less than max_soc_pct")
-
     site = get_user_site(user_id)
     if not site:
         raise HTTPException(status_code=404, detail="No site found. Complete setup first.")
+
+    # Battery parameters come from the saved battery row (single source of
+    # truth), with explicit request values as overrides — never a hardcoded
+    # 5 kWh / 3 kW. Previously the frontend had to remember to send these and
+    # the model defaults silently mis-optimised any battery that wasn't
+    # 5 kWh / 3 kW / 20–100%.
+    battery = get_user_battery(user_id)
+    batt_capacity = _resolve_battery_param(req.battery_capacity_kwh, battery, "capacity_kwh")
+    batt_min_soc = _resolve_battery_param(req.min_soc_pct, battery, "min_soc_pct")
+    batt_max_soc = _resolve_battery_param(req.max_soc_pct, battery, "max_soc_pct")
+    batt_charge_kw = _resolve_battery_param(req.charge_power_kw, battery, "max_charge_kw")
+    batt_discharge_kw = _resolve_battery_param(req.discharge_power_kw, battery, "max_discharge_kw")
+
+    if batt_min_soc >= batt_max_soc:
+        raise HTTPException(status_code=400, detail="min_soc_pct must be less than max_soc_pct")
+
+    # Initial SOC is the one thing the backend cannot know without live data:
+    # an explicit value wins, else read live SOC from FoxESS. Refuse to guess —
+    # optimising from a made-up SOC produces a wrong schedule.
+    initial_soc = req.initial_soc_pct
+    if initial_soc is None:
+        initial_soc = get_battery_realtime(user_id).get("soc_pct")
+    if initial_soc is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Initial SOC required: live SOC is unavailable (no FoxESS credentials or a data gap). Set an initial SOC and run again.",
+        )
 
     try:
         inputs = get_optimiser_inputs(str(site["id"]))
@@ -272,12 +322,12 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
     
         schedule = mvp_cost_minimiser(
             inputs_df=inputs,
-            battery_capacity_kwh=req.battery_capacity_kwh,
-            initial_soc_pct=req.initial_soc_pct,
-            min_soc_pct=req.min_soc_pct,
-            max_soc_pct=req.max_soc_pct,
-            charge_power_kw=req.charge_power_kw,
-            discharge_power_kw=req.discharge_power_kw,
+            battery_capacity_kwh=batt_capacity,
+            initial_soc_pct=initial_soc,
+            min_soc_pct=batt_min_soc,
+            max_soc_pct=batt_max_soc,
+            charge_power_kw=batt_charge_kw,
+            discharge_power_kw=batt_discharge_kw,
         )
 
         # Compute summary stats
@@ -304,6 +354,8 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
             },
             "schedule": schedule.to_dict(orient="records"),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Optimisation failed: {str(e)}")
 
@@ -346,11 +398,11 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         raise HTTPException(status_code=400, detail=f"Live SOC unavailable: {error}")
 
     # Use battery config as defaults — don't hardcode
-    batt_capacity = req.battery_capacity_kwh or battery.get("capacity_kwh", 15.0)
-    batt_min_soc = req.min_soc_pct or battery.get("min_soc_pct", 20.0)
-    batt_max_soc = req.max_soc_pct or battery.get("max_soc_pct", 100.0)
-    batt_charge_kw = req.charge_power_kw or battery.get("max_charge_kw", 3.0)
-    batt_discharge_kw = req.discharge_power_kw or battery.get("max_discharge_kw", 3.0)
+    batt_capacity = _resolve_battery_param(req.battery_capacity_kwh, battery, "capacity_kwh")
+    batt_min_soc = _resolve_battery_param(req.min_soc_pct, battery, "min_soc_pct")
+    batt_max_soc = _resolve_battery_param(req.max_soc_pct, battery, "max_soc_pct")
+    batt_charge_kw = _resolve_battery_param(req.charge_power_kw, battery, "max_charge_kw")
+    batt_discharge_kw = _resolve_battery_param(req.discharge_power_kw, battery, "max_discharge_kw")
 
     # 2. Run optimiser
     try:
@@ -493,10 +545,10 @@ def verify_internal_key(x_internal_key: Optional[str] = Header(None)):
 
 class InternalOptimiseRequest(BaseModel):
     user_id: str
-    battery_capacity_kwh: float = 15.0
+    battery_capacity_kwh: float = 5.0
     initial_soc_pct: float = 50.0
     min_soc_pct: float = 20.0
-    max_soc_pct: float = 90.0
+    max_soc_pct: float = 100.0
     charge_power_kw: float = 3.0
     discharge_power_kw: float = 3.0
 

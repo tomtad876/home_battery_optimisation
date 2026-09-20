@@ -248,3 +248,19 @@ test('a 4xx is not retried', async () => {
     server.close()
   }
 })
+
+test('an abort during a request is cancelled, not a network failure', async () => {
+  const server = http.createServer(() => {}) // accepts, never responds
+  await new Promise((resolve) => server.listen(0, resolve))
+  const { port } = server.address()
+  const controller = new AbortController()
+  setTimeout(() => controller.abort(), 100)
+  try {
+    await assert.rejects(
+      apiFetch(`http://127.0.0.1:${port}/hang`, { signal: controller.signal, timeoutMs: 2000 }),
+      (err) => err instanceof ApiError && err.kind === 'cancelled'
+    )
+  } finally {
+    server.close()
+  }
+})

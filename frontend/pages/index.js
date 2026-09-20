@@ -3,7 +3,7 @@ import ScheduleCharts from '@/components/ScheduleCharts'
 import AuthForm from '@/components/AuthForm'
 import SetupWizard from '@/components/SetupWizard'
 import { supabase } from '@/lib/supabaseClient'
-import { API_URL, apiFetch, friendlyError } from '@/lib/api'
+import { apiFetch, friendlyError } from '@/lib/api'
 import { useState, useEffect, useRef, useCallback } from 'react'
 
 export default function Home() {
@@ -26,8 +26,6 @@ export default function Home() {
   const [previewResult, setPreviewResult] = useState(null)
   const checkedSessionRef = useRef(false)
   const autoRanRef = useRef(false)
-
-  const apiUrl = API_URL
 
   const fetchRealtime = useCallback(async (accessToken) => {
     try {
@@ -319,7 +317,7 @@ export default function Home() {
 
           {/* Logged in, no site → setup wizard */}
           {user && !siteLoading && !site && !siteError && (
-            <SetupWizard apiUrl={apiUrl} onComplete={handleSetupComplete} />
+            <SetupWizard onComplete={handleSetupComplete} />
           )}
 
           {/* Logged in, has site → dashboard */}
@@ -365,7 +363,8 @@ export default function Home() {
                     )}
                     <button
                       onClick={runOptimiser}
-                      disabled={loading}
+                      disabled={loading || (!hasLiveSoc && manualSoc === '')}
+                      title={!hasLiveSoc && manualSoc === '' ? 'Enter an initial SOC % first' : undefined}
                       className="bg-blue-600 text-white py-2 px-5 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {loading ? 'Optimising…' : schedule ? 'Re-run optimiser' : 'Run optimiser'}

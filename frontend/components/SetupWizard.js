@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { extractDetail, readJson } from '@/lib/api'
+import { apiFetch, friendlyError } from '@/lib/api'
 
 const STEPS = ['Site', 'Battery', 'Tariff', 'Credentials']
 
-export default function SetupWizard({ apiUrl, onComplete }) {
+export default function SetupWizard({ onComplete }) {
   const [step, setStep] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -37,31 +37,23 @@ export default function SetupWizard({ apiUrl, onComplete }) {
     foxess_api_key: '',
   })
 
-  const getHeaders = () => ({
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${session?.access_token}`,
-  })
-
   const handleCreateSite = async () => {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${apiUrl}/sites`, {
+      const data = await apiFetch('/sites', {
         method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify(siteData),
+        accessToken: session?.access_token,
+        body: siteData,
+        retryUnsafe: false, // a timeout may mean the site was already created
       })
-      const data = await readJson(res)
-      if (!res.ok) {
-        throw new Error(extractDetail(data, 'Failed to create site'))
-      }
       if (!data?.site?.id) {
         throw new Error('Site was created but the server returned an unexpected response.')
       }
       setSiteId(data.site.id)
       setStep(1)
     } catch (err) {
-      setError(err.message)
+      setError(friendlyError(err, 'Failed to create site'))
     } finally {
       setLoading(false)
     }
@@ -71,10 +63,10 @@ export default function SetupWizard({ apiUrl, onComplete }) {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${apiUrl}/batteries`, {
+      await apiFetch('/batteries', {
         method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({
+        accessToken: session?.access_token,
+        body: {
           site_id: siteId,
           ...batteryData,
           provider_config: {
@@ -82,15 +74,12 @@ export default function SetupWizard({ apiUrl, onComplete }) {
             solcast_system_id: credData.solcast_system_id,
             foxess_api_key: credData.foxess_api_key,
           },
-        }),
+        },
+        retryUnsafe: false, // a timeout may mean the battery was already created
       })
-      if (!res.ok) {
-        const err = await readJson(res)
-        throw new Error(extractDetail(err, 'Failed to save battery config'))
-      }
       setStep(2)
     } catch (err) {
-      setError(err.message)
+      setError(friendlyError(err, 'Failed to save battery config'))
     } finally {
       setLoading(false)
     }
@@ -100,23 +89,20 @@ export default function SetupWizard({ apiUrl, onComplete }) {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${apiUrl}/tariffs`, {
+      await apiFetch('/tariffs', {
         method: 'POST',
-        headers: getHeaders(),
-        body: JSON.stringify({
+        accessToken: session?.access_token,
+        body: {
           site_id: siteId,
           import_type: tariffData.import_type,
           export_type: tariffData.export_type,
           config_json: { region_code: tariffData.region_code },
-        }),
+        },
+        retryUnsafe: false, // a timeout may mean the tariff was already created
       })
-      if (!res.ok) {
-        const err = await readJson(res)
-        throw new Error(extractDetail(err, 'Failed to save tariff'))
-      }
       setStep(3)
     } catch (err) {
-      setError(err.message)
+      setError(friendlyError(err, 'Failed to save tariff'))
     } finally {
       setLoading(false)
     }

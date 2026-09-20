@@ -50,9 +50,9 @@ export default function CredentialsSettings() {
           retryUnsafe: false,
           body: {
             site_id: siteData.site.id,
-            capacity_kwh: 13.5,
-            max_charge_kw: 5.0,
-            max_discharge_kw: 5.0,
+            capacity_kwh: 5.0,
+            max_charge_kw: 3.0,
+            max_discharge_kw: 3.0,
             min_soc_pct: 20.0,
             max_soc_pct: 100.0,
             provider_type: 'foxess',
@@ -69,9 +69,9 @@ export default function CredentialsSettings() {
         setSolcastSystemId(config.solcast_system_id || '');
         setFoxessApiKey(config.foxess_api_key || '');
         setFoxessDeviceSn(config.foxess_device_sn || '');
-        setCapacityKwh(String(battery.capacity_kwh ?? '13.5'));
-        setMaxChargeKw(String(battery.max_charge_kw ?? '5.0'));
-        setMaxDischargeKw(String(battery.max_discharge_kw ?? '5.0'));
+        setCapacityKwh(String(battery.capacity_kwh ?? '5.0'));
+        setMaxChargeKw(String(battery.max_charge_kw ?? '3.0'));
+        setMaxDischargeKw(String(battery.max_discharge_kw ?? '3.0'));
         setMinSocPct(String(battery.min_soc_pct ?? '20'));
         setMaxSocPct(String(battery.max_soc_pct ?? '100'));
         setAutoPushEnabled(battery.auto_push_enabled ?? false);
@@ -101,9 +101,9 @@ export default function CredentialsSettings() {
         method: 'PUT',
         accessToken,
         body: {
-          capacity_kwh: parseFloat(capacityKwh) || 13.5,
-          max_charge_kw: parseFloat(maxChargeKw) || 5.0,
-          max_discharge_kw: parseFloat(maxDischargeKw) || 5.0,
+          capacity_kwh: parseFloat(capacityKwh) || 5.0,
+          max_charge_kw: parseFloat(maxChargeKw) || 3.0,
+          max_discharge_kw: parseFloat(maxDischargeKw) || 3.0,
           min_soc_pct: parseFloat(minSocPct) || 20,
           max_soc_pct: parseFloat(maxSocPct) || 100,
           auto_push_enabled: autoPushEnabled,

@@ -78,7 +78,7 @@ export class ApiError extends Error {
     super(message)
     this.name = 'ApiError'
     this.status = status
-    this.kind = kind // 'http' | 'network' | 'timeout' | 'config'
+    this.kind = kind // 'http' | 'network' | 'timeout' | 'config' | 'cancelled'
     this.payload = payload
     this.url = url
     this.timeoutMs = timeoutMs
@@ -145,6 +145,10 @@ export function friendlyError(err, fallback = 'Something went wrong.') {
 
   if (err.kind === 'config') {
     return `${err.message} Nothing was requested — set NEXT_PUBLIC_API_URL for this environment (Vercel → Settings → Environment Variables) and redeploy.`
+  }
+
+  if (err.kind === 'cancelled') {
+    return 'Request cancelled.'
   }
 
   const where = originOf(err.url)
@@ -326,7 +330,7 @@ async function attemptFetch(url, { method, headers, body, timeoutMs, signal }) {
       cache: 'no-store',
     })
   } catch (err) {
-    if (signal?.aborted) throw new ApiError('Request cancelled.', { kind: 'network', url })
+    if (signal?.aborted) throw new ApiError('Request cancelled.', { kind: 'cancelled', url })
     if (err?.name === 'AbortError') {
       throw new ApiError('Request timed out.', { kind: 'timeout', url, timeoutMs })
     }
