@@ -242,8 +242,8 @@ class TestOptimiserRoute:
 
     @patch('app.api.routes.mvp_cost_minimiser')
     @patch('app.api.routes.get_optimiser_inputs')
-    def test_optimise_mvp_excludes_synthetic_tail(self, mock_inputs, mock_optimiser, client):
-        """Synthetic (backfilled-price) rows must not leak into summary or schedule."""
+    def test_optimise_mvp_returns_full_schedule_with_synthetic_flag(self, mock_inputs, mock_optimiser, client):
+        """Summary covers real rows only, but the schedule returns the full tail, flagged."""
         mock_inputs.return_value = pd.DataFrame({
             "period_end": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
             "pv_estimate": [0.0, 0.5, 1.0, 0.3],
@@ -266,10 +266,9 @@ class TestOptimiserRoute:
         assert response.status_code == 200
         data = response.json()
 
-        # Schedule excludes synthetic rows and the flag column itself
-        assert len(data["schedule"]) == 2
-        for row in data["schedule"]:
-            assert "is_synthetic" not in row
+        # Full schedule returned, with the flag preserved and JSON-safe
+        assert len(data["schedule"]) == 4
+        assert [r["is_synthetic"] for r in data["schedule"]] == [False, False, True, True]
 
         # Summary covers real rows only (cost 1+2, solar 0.5, demand 1.0, import 0.2, export 0.4)
         summary = data["summary"]

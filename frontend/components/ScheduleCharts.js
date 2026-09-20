@@ -38,13 +38,13 @@ const NOW_ANNOTATION = (label) => label ? {
   },
 } : {}
 
-const COMMON_OPTIONS = (nowLabel, keyToLabel = {}) => ({
+const COMMON_OPTIONS = (nowLabel, keyToLabel = {}, extraAnnotations = {}) => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index', intersect: false },
   plugins: {
     legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } },
-    annotation: { annotations: NOW_ANNOTATION(nowLabel) },
+    annotation: { annotations: { ...NOW_ANNOTATION(nowLabel), ...extraAnnotations } },
   },
   scales: {
     x: {
@@ -60,8 +60,13 @@ const COMMON_OPTIONS = (nowLabel, keyToLabel = {}) => ({
   },
 })
 
-export default function ScheduleCharts({ schedule, historicData, nowTime, dayPrices = [] }) {
+export default function ScheduleCharts({ schedule, historicData, nowTime, dayPrices = [], showEstimated = false }) {
   if (!schedule || schedule.length === 0) return null
+
+  // The schedule may include a backfilled-price tail (is_synthetic). Hide it by
+  // default; the test-env toggle reveals it, marked with an "estimated" boundary.
+  const shown = showEstimated ? schedule : schedule.filter((s) => !s.is_synthetic)
+  if (shown.length === 0) return null
 
   // Normalize any datetime string to a consistent ISO key for map lookups
   function isoKey(s) { return new Date(s).toISOString() }
@@ -84,7 +89,7 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
     }
   }).filter((d) => d._raw <= nowMs)
 
-  const forecast = schedule.map((period) => {
+  const forecast = shown.map((period) => {
     const t = new Date(period.period_end)
     return {
       _iso: isoKey(period.period_end), _raw: t.getTime(),
@@ -98,6 +103,7 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
       batt_discharge: Number(period.batt_discharge_kwh || 0),
       grid_import: Number(period.grid_import_kwh || 0),
       grid_export: Number(period.grid_export_kwh || 0),
+      is_synthetic: !!period.is_synthetic,
     }
   })
 
@@ -164,6 +170,38 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
     }
   }
 
+  // Boundary between real published prices and the backfilled/estimated tail.
+  const firstSynthetic = forecast.find((f) => f.is_synthetic)
+  const estimatedLabel = showEstimated && firstSynthetic ? firstSynthetic._iso : null
+  const lastLabel = labels.length > 0 ? labels[labels.length - 1] : null
+  const estAnnotations = estimatedLabel ? {
+    estimatedLine: {
+      type: 'line',
+      xMin: estimatedLabel,
+      xMax: estimatedLabel,
+      borderColor: '#F59E0B',
+      borderWidth: 2,
+      borderDash: [6, 3],
+      label: {
+        display: true,
+        content: 'estimated prices',
+        position: 'start',
+        backgroundColor: 'rgba(245, 158, 11, 0.9)',
+        color: '#fff',
+        font: { size: 10 },
+      },
+    },
+    estimatedRegion: {
+      type: 'box',
+      xMin: estimatedLabel,
+      xMax: lastLabel,
+      backgroundColor: 'rgba(0, 0, 0, 0.04)',
+      borderWidth: 0,
+    },
+  } : {}
+
+  const baseOptions = COMMON_OPTIONS(nowLabel, keyToLabel, estAnnotations)
+
   // ---- Chart 1: Solar, Demand & Price ----
   const solarData = {
     labels,
@@ -177,9 +215,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const solarOptions = {
-    ...COMMON_OPTIONS(nowLabel, keyToLabel),
+    ...baseOptions,
     scales: {
-      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
+      ...baseOptions.scales,
       y: { position: 'left', title: { display: true, text: 'kWh' } },
       y1: { position: 'right', title: { display: true, text: 'pence/kWh' }, grid: { drawOnChartArea: false } },
     },
@@ -194,9 +232,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const socOptions = {
-    ...COMMON_OPTIONS(nowLabel, keyToLabel),
+    ...baseOptions,
     scales: {
-      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
+      ...baseOptions.scales,
       y: { min: 0, max: 100, title: { display: true, text: 'SOC (%)' } },
     },
   }
@@ -211,9 +249,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const actionsOptions = {
-    ...COMMON_OPTIONS(nowLabel, keyToLabel),
+    ...baseOptions,
     scales: {
-      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
+      ...baseOptions.scales,
       y: { title: { display: true, text: 'Energy (kWh)' } },
     },
   }
@@ -228,9 +266,9 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const gridOptions = {
-    ...COMMON_OPTIONS(nowLabel, keyToLabel),
+    ...baseOptions,
     scales: {
-      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
+      ...baseOptions.scales,
       y: { title: { display: true, text: 'Energy (kWh)' } },
     },
   }
@@ -273,13 +311,13 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
   }
 
   const costOptions = {
-    ...COMMON_OPTIONS(nowLabel, keyToLabel),
+    ...baseOptions,
     scales: {
-      ...COMMON_OPTIONS(nowLabel, keyToLabel).scales,
+      ...baseOptions.scales,
       y: { title: { display: true, text: 'Cost (£)' } },
     },
     plugins: {
-      ...COMMON_OPTIONS(nowLabel, keyToLabel).plugins,
+      ...baseOptions.plugins,
       tooltip: {
         callbacks: {
           label: (ctx) => `${ctx.dataset.label}: £${Number(ctx.parsed.y).toFixed(2)}`,

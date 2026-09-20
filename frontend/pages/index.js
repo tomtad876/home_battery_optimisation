@@ -6,6 +6,11 @@ import { supabase } from '@/lib/supabaseClient'
 import { apiFetch, friendlyError } from '@/lib/api'
 import { useState, useEffect, useRef, useCallback } from 'react'
 
+// Test-environment only flag. NODE_ENV is 'development' under `next dev` and
+// 'production' for any build (`next build`/`next start`/Vercel), so this toggle
+// cannot leak into a production deployment.
+const IS_DEV = process.env.NODE_ENV === 'development'
+
 export default function Home() {
   const [schedule, setSchedule] = useState(null)
   const [summary, setSummary] = useState(null)
@@ -24,6 +29,7 @@ export default function Home() {
   const [pushResult, setPushResult] = useState(null)
   const [previewing, setPreviewing] = useState(false)
   const [previewResult, setPreviewResult] = useState(null)
+  const [showEstimated, setShowEstimated] = useState(false)
   const checkedSessionRef = useRef(false)
   const autoRanRef = useRef(false)
 
@@ -111,6 +117,7 @@ export default function Home() {
         grid_export_kwh: r.grid_export_kwh ?? r.grid_export ?? 0,
         cost_gbp: r.cost_gbp ?? r.cost ?? 0,
         export_price: r.export_price ?? r.export_price_pence ?? null,
+        is_synthetic: !!r.is_synthetic,
       }))
       setSchedule(normalized)
       setLastRunAt(
@@ -431,7 +438,20 @@ export default function Home() {
                       </div>
 
                       {/* Charts */}
-                      <ScheduleCharts schedule={schedule} historicData={realtimeData.history} nowTime={realtimeData.fetchedAt} dayPrices={dayPrices} />
+                      {IS_DEV && (
+                        <div className="flex items-center gap-2 mb-4">
+                          <label className="text-sm text-gray-600 flex items-center gap-2 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={showEstimated}
+                              onChange={(e) => setShowEstimated(e.target.checked)}
+                              className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                            />
+                            Show estimated tail (backfilled prices — test only)
+                          </label>
+                        </div>
+                      )}
+                      <ScheduleCharts schedule={schedule} historicData={realtimeData.history} nowTime={realtimeData.fetchedAt} dayPrices={dayPrices} showEstimated={showEstimated} />
 
                       {/* Push to Inverter */}
                       <div className="bg-white rounded-lg shadow p-6 mt-6">

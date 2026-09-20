@@ -331,14 +331,14 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
         )
 
         # The schedule spans the full 48h horizon including a backfilled-price
-        # tail (marked `is_synthetic`). That tail exists only to make the
-        # optimisation aware of tomorrow; its prices are estimated, so both the
-        # summary and the returned schedule cover real (published) data only.
+        # tail (marked `is_synthetic`). The summary covers real (published) data
+        # only, but the full schedule is returned so the UI can optionally show
+        # the estimated tail (e.g. a test-env toggle that doesn't exist in prod).
         real_schedule = schedule
         if "is_synthetic" in schedule.columns:
             real_schedule = schedule[~schedule["is_synthetic"].astype(bool)]
 
-        # Compute summary stats
+        # Compute summary stats (over real data only)
         total_cost = float(real_schedule["cost_gbp"].sum())
         total_solar = float(real_schedule["pv_estimate"].sum())
         total_demand = float(real_schedule["demand"].sum())
@@ -349,11 +349,10 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
         else:
             total_export_revenue = 0.0
 
-        schedule_out = (
-            real_schedule.drop(columns=["is_synthetic"])
-            if "is_synthetic" in real_schedule.columns
-            else real_schedule
-        )
+        schedule_records = schedule.to_dict(orient="records")
+        for r in schedule_records:
+            if "is_synthetic" in r:
+                r["is_synthetic"] = bool(r["is_synthetic"])
 
         return {
             "status": "success",
@@ -366,7 +365,7 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
                 "total_grid_export_kwh": total_export,
                 "total_grid_export_revenue_gbp": total_export_revenue,
             },
-            "schedule": schedule_out.to_dict(orient="records"),
+            "schedule": schedule_records,
         }
     except HTTPException:
         raise
