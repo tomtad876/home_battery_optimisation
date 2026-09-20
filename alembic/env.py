@@ -15,7 +15,6 @@ config = context.config
 
 # Set the URL from env
 config.set_main_option("sqlalchemy.url", os.getenv("DATABASE_URL"))
-print(os.getenv("DATABASE_URL"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -40,6 +39,7 @@ import app.models.battery
 import app.models.agilerates
 import app.models.solcastforecast
 import app.models.historicenergydata
+import app.models.demandevent
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:
