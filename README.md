@@ -90,7 +90,7 @@ Optimise battery dispatch schedule for lowest cost over 24-48 hours.
 ```json
 {
   "pv_system_id": "feae-7d5c-b618-0bfa",
-  "battery_capacity_kwh": 15.0,
+  "battery_capacity_kwh": 5.0,
   "initial_soc_pct": 50.0,
   "min_soc_pct": 20.0,
   "max_soc_pct": 90.0,

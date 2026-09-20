@@ -62,7 +62,7 @@ You should see:
 
 ### Fill in the form:
 1. **PV System ID** – Enter your Solcast PV system ID (e.g. `feae-7d5c-b618-0bfa`)
-2. **Battery Capacity** – Keep at 15 kWh (or adjust to your battery)
+2. **Battery Capacity** – Your actual battery capacity (5 kWh for Tom's setup — check the settings page)
 3. **Initial SOC** – Set to current battery state (e.g. 50%)
 4. **SOC Bounds** – Min 20%, Max 90% (default, adjust if needed)
 5. **Power Limits** – Charge/discharge power (default 3 kW each)
