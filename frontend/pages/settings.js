@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { apiFetch, friendlyError } from '@/lib/api';
 
 export default function CredentialsSettings() {
   const [loading, setLoading] = useState(true);
@@ -30,27 +31,24 @@ export default function CredentialsSettings() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      let resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
+      let battery = null;
+      try {
+        const data = await apiFetch('/batteries/me', { accessToken: session.access_token });
+        battery = data?.battery ?? null;
+      } catch (err) {
+        // 404 = no battery yet; anything else is a real failure
+        if (err?.status !== 404) throw err;
+      }
 
       // If no battery exists, create a default one
-      if (resp.status === 404) {
-        const siteResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/sites/me`, {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        });
-        if (!siteResp.ok) {
-          setMessage({ type: 'error', text: 'No site found. Please complete the setup wizard first.' });
-          return;
-        }
-        const siteData = await siteResp.json();
-        const createResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries`, {
+      if (!battery) {
+        const siteData = await apiFetch('/sites/me', { accessToken: session.access_token });
+        // Not safe to retry: a repeated create could add a second battery
+        const created = await apiFetch('/batteries', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
+          accessToken: session.access_token,
+          retryUnsafe: false,
+          body: {
             site_id: siteData.site.id,
             capacity_kwh: 13.5,
             max_charge_kw: 5.0,
@@ -59,35 +57,29 @@ export default function CredentialsSettings() {
             max_soc_pct: 100.0,
             provider_type: 'foxess',
             provider_config: {},
-          }),
+          },
         });
-        if (createResp.ok) {
-          resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me`, {
-            headers: { Authorization: `Bearer ${session.access_token}` },
-          });
-        }
+        battery = created?.battery ?? null;
       }
 
-      if (resp.ok) {
-        const data = await resp.json();
-        const config = data.battery?.provider_config || {};
-        setBatteryId(data.battery?.id);
+      if (battery) {
+        const config = battery.provider_config || {};
+        setBatteryId(battery.id);
         setSolcastApiKey(config.solcast_api_key || '');
         setSolcastSystemId(config.solcast_system_id || '');
         setFoxessApiKey(config.foxess_api_key || '');
         setFoxessDeviceSn(config.foxess_device_sn || '');
-        setCapacityKwh(String(data.battery?.capacity_kwh ?? '13.5'));
-        setMaxChargeKw(String(data.battery?.max_charge_kw ?? '5.0'));
-        setMaxDischargeKw(String(data.battery?.max_discharge_kw ?? '5.0'));
-        setMinSocPct(String(data.battery?.min_soc_pct ?? '20'));
-        setMaxSocPct(String(data.battery?.max_soc_pct ?? '100'));
-        setAutoPushEnabled(data.battery?.auto_push_enabled ?? false);
+        setCapacityKwh(String(battery.capacity_kwh ?? '13.5'));
+        setMaxChargeKw(String(battery.max_charge_kw ?? '5.0'));
+        setMaxDischargeKw(String(battery.max_discharge_kw ?? '5.0'));
+        setMinSocPct(String(battery.min_soc_pct ?? '20'));
+        setMaxSocPct(String(battery.max_soc_pct ?? '100'));
+        setAutoPushEnabled(battery.auto_push_enabled ?? false);
       } else {
-        const err = await resp.json().catch(() => ({}));
-        setMessage({ type: 'error', text: err.detail || 'Failed to load credentials.' });
+        setMessage({ type: 'error', text: 'No battery found. Please complete the setup wizard first.' });
       }
-    } catch (e) {
-      console.error('Failed to load credentials:', e);
+    } catch (err) {
+      setMessage({ type: 'error', text: friendlyError(err, 'Failed to load credentials.') });
     } finally {
       setLoading(false);
     }
@@ -102,23 +94,20 @@ export default function CredentialsSettings() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
-      const headers = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      };
+      const accessToken = session.access_token;
 
       // Save battery config
-      const battResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me`, {
+      await apiFetch('/batteries/me', {
         method: 'PUT',
-        headers,
-        body: JSON.stringify({
+        accessToken,
+        body: {
           capacity_kwh: parseFloat(capacityKwh) || 13.5,
           max_charge_kw: parseFloat(maxChargeKw) || 5.0,
           max_discharge_kw: parseFloat(maxDischargeKw) || 5.0,
           min_soc_pct: parseFloat(minSocPct) || 20,
           max_soc_pct: parseFloat(maxSocPct) || 100,
           auto_push_enabled: autoPushEnabled,
-        }),
+        },
       });
 
       // Save API credentials
@@ -128,20 +117,16 @@ export default function CredentialsSettings() {
       if (foxessApiKey) credBody.foxess_api_key = foxessApiKey;
       if (foxessDeviceSn) credBody.foxess_device_sn = foxessDeviceSn;
 
-      const credResp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/batteries/me/provider_config`, {
+      await apiFetch('/batteries/me/provider_config', {
         method: 'PUT',
-        headers,
-        body: JSON.stringify(credBody),
+        accessToken,
+        body: credBody,
       });
 
-      if (battResp.ok && credResp.ok) {
-        setMessage({ type: 'success', text: 'Settings saved successfully.' });
-      } else {
-        const err = await (battResp.ok ? credResp : battResp).json();
-        setMessage({ type: 'error', text: err.detail || 'Failed to save.' });
-      }
-    } catch (e) {
-      setMessage({ type: 'error', text: 'Network error.' });
+      setMessage({ type: 'success', text: 'Settings saved successfully.' });
+    } catch (err) {
+      // Never render a raw FastAPI 422 array — that used to crash this page
+      setMessage({ type: 'error', text: friendlyError(err, 'Failed to save.') });
     } finally {
       setSaving(false);
     }

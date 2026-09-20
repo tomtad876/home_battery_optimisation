@@ -1,13 +1,17 @@
 import { useState, useEffect } from 'react'
 
 export default function OptimiserForm({ onSubmit, loading, defaultSoc }) {
+  // Every field is optional and blank by default: the backend fills the blanks
+  // from the user's saved battery row (routes.py:348-353). Hardcoding 5 kWh /
+  // 3 kW here overrode that and would silently mis-optimise another user's
+  // battery. Blank means "use my saved settings".
   const [formData, setFormData] = useState({
-    battery_capacity_kwh: 5.0,
-    initial_soc_pct: null,
-    min_soc_pct: 20.0,
-    max_soc_pct: 100.0,
-    charge_power_kw: 3.0,
-    discharge_power_kw: 3.0,
+    battery_capacity_kwh: '',
+    initial_soc_pct: '',
+    min_soc_pct: '',
+    max_soc_pct: '',
+    charge_power_kw: '',
+    discharge_power_kw: '',
   })
 
   useEffect(() => {
@@ -20,20 +24,35 @@ export default function OptimiserForm({ onSubmit, loading, defaultSoc }) {
     const { name, value } = e.target
     setFormData((prev) => ({
       ...prev,
-      [name]: isNaN(value) ? value : Number(value),
+      [name]: value === '' || isNaN(value) ? value : Number(value),
     }))
+  }
+
+  // Send only the fields the user actually filled in; omit the blanks so the
+  // backend applies the saved battery config.
+  const toPayload = (form) => {
+    const payload = {}
+    for (const [key, value] of Object.entries(form)) {
+      if (value === '' || value === null || value === undefined) continue
+      const numeric = Number(value)
+      if (Number.isNaN(numeric)) continue
+      payload[key] = numeric
+    }
+    return payload
   }
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    onSubmit(formData)
+    onSubmit(toPayload(formData))
   }
+
+  const hint = 'Leave blank to use your saved battery settings'
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <h2 className="text-lg font-semibold text-gray-900 mb-4">Battery Config</h2>
 
-
+      <p className="text-xs text-gray-500 -mt-2">{hint}.</p>
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">

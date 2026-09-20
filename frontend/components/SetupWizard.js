@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
+import { extractDetail, readJson } from '@/lib/api'
 
 const STEPS = ['Site', 'Battery', 'Tariff', 'Credentials']
 
@@ -50,11 +51,13 @@ export default function SetupWizard({ apiUrl, onComplete }) {
         headers: getHeaders(),
         body: JSON.stringify(siteData),
       })
+      const data = await readJson(res)
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to create site')
+        throw new Error(extractDetail(data, 'Failed to create site'))
       }
-      const data = await res.json()
+      if (!data?.site?.id) {
+        throw new Error('Site was created but the server returned an unexpected response.')
+      }
       setSiteId(data.site.id)
       setStep(1)
     } catch (err) {
@@ -82,8 +85,8 @@ export default function SetupWizard({ apiUrl, onComplete }) {
         }),
       })
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to save battery config')
+        const err = await readJson(res)
+        throw new Error(extractDetail(err, 'Failed to save battery config'))
       }
       setStep(2)
     } catch (err) {
@@ -108,8 +111,8 @@ export default function SetupWizard({ apiUrl, onComplete }) {
         }),
       })
       if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to save tariff')
+        const err = await readJson(res)
+        throw new Error(extractDetail(err, 'Failed to save tariff'))
       }
       setStep(3)
     } catch (err) {
