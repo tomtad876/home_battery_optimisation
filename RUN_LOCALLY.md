@@ -88,6 +88,26 @@ You should see summary cards with:
 
 ## Troubleshooting
 
+### "Could not reach the API at …" — read the message, it now says which of these it is
+
+1. **"…is up, but the browser blocked the response — that is CORS"** (the usual one on a Vercel preview). The page's origin isn't in the backend's allowlist. Vercel issues a *new* hostname per branch preview, so an exact-origin list can never cover them — `app/main.py` allows this project's preview hosts by pattern (`FRONTEND_ORIGIN_REGEX`). For any other origin, add it to `FRONTEND_ORIGINS` on Render (comma-separated) and redeploy.
+   Verify from a terminal — an allowed origin returns `access-control-allow-origin`, a blocked one returns 400 with no such header:
+   ```bash
+   curl -s -D - -o /dev/null -X OPTIONS https://home-battery-optimisation.onrender.com/sites/me \
+     -H "Origin: https://home-battery-optimisation-git-agent-abc-tomtad876s-projects.vercel.app" \
+     -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization" | grep -i access-control
+   ```
+2. **"…nothing answered. The local backend looks like it is not running"** — start the backend: `./venv/bin/uvicorn app.main:app --reload --port 8000`, then hit Try again.
+3. **"…it is asking your own machine for a backend"** — the page is deployed but `NEXT_PUBLIC_API_URL` is set to localhost for that environment. `NEXT_PUBLIC_API_URL` is **per-scope** in Vercel, so a Preview deployment uses the *Preview* value:
+   ```
+   Vercel → project → Settings → Environment Variables → NEXT_PUBLIC_API_URL
+     Production  https://home-battery-optimisation.onrender.com
+     Preview     https://home-battery-optimisation.onrender.com
+     Development http://localhost:8000   (vercel env pull writes this into .env.local)
+   ```
+   Beware `vercel env pull` — it overwrites `.env.local` and can drop other vars.
+4. **"This build has no API URL configured"** — the variable is missing entirely for that environment. The app deliberately does **not** fall back to the prod API: a preview that quietly talks to production can push schedules to a real inverter.
+
 ### "Cannot POST /optimise/mvp"
 - Ensure backend is running on port 8000
 - Check `.env` has valid SOLCAST_API_KEY and FOXESS_API_KEY

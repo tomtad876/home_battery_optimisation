@@ -63,7 +63,9 @@ export default function Home() {
     try {
       const data = await apiFetch('/sites/me', {
         accessToken,
-        retries: 1,
+        // Three attempts (~95s worst case) so a sleeping backend recovers on its
+        // own. The loading copy says what's happening while it waits.
+        retries: 2,
         onRetry: () => setServerWaking(true),
       })
       setSite(data?.site ?? null)

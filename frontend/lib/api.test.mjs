@@ -16,7 +16,7 @@ import { readFileSync } from 'node:fs'
 // so Node would treat a plain `import './api.js'` as CommonJS. Load it explicitly
 // as ESM from source — it has no imports of its own, so this needs no bundler.
 const source = readFileSync(new URL('./api.js', import.meta.url), 'utf8')
-const { ApiError, apiFetch, extractDetail, friendlyError, readJson } = await import(
+const { ApiError, apiFetch, extractDetail, friendlyError, readJson, resolveApiUrl } = await import(
   'data:text/javascript;base64,' + Buffer.from(source).toString('base64')
 )
 
@@ -84,9 +84,86 @@ test('JSON body parses', async () => {
 
 // --- error copy ---------------------------------------------------------------
 
-test('deadline and connection failures get honest copy', () => {
-  assert.match(friendlyError(new ApiError('x', { kind: 'timeout' })), /waking up/)
-  assert.match(friendlyError(new ApiError('x', { kind: 'network' })), /Could not reach the server/)
+test('a deployed build with no API URL says so, instead of blaming the connection', () => {
+  const message = friendlyError(
+    new ApiError('This build has no API URL configured (NEXT_PUBLIC_API_URL is missing for this environment).', {
+      kind: 'config',
+    })
+  )
+  assert.match(message, /no API URL configured/)
+  assert.match(message, /NEXT_PUBLIC_API_URL/)
+  assert.match(message, /Nothing was requested/)
+})
+
+test('API URL resolution: configured, local dev, and deployed-but-unset', () => {
+  // configured (trailing slash trimmed)
+  assert.equal(resolveApiUrl('https://api.example.com/', 'whatever.vercel.app'), 'https://api.example.com')
+  // unset + local dev / SSR → the usual uvicorn port
+  assert.equal(resolveApiUrl('', 'localhost'), 'http://localhost:8000')
+  assert.equal(resolveApiUrl('', '127.0.0.1'), 'http://localhost:8000')
+  assert.equal(resolveApiUrl('', null), 'http://localhost:8000')
+  // unset + deployed → '' (misconfigured), never a silent localhost or prod call
+  assert.equal(resolveApiUrl('', 'home-battery-optimisation-git-agent-x.vercel.app'), '')
+})
+
+test('a deployed page pointed at localhost explains the config mistake', () => {
+  const previousWindow = globalThis.window
+  globalThis.window = { location: { hostname: 'home-battery-optimisation-git-agent-63cd07.vercel.app' } }
+  try {
+    const message = friendlyError(
+      new ApiError('Network error.', { kind: 'network', url: 'http://localhost:8000/sites/me' })
+    )
+    assert.match(message, /Could not reach the API at http:\/\/localhost:8000/)
+    assert.match(message, /asking your own machine for a backend/)
+    assert.match(message, /NEXT_PUBLIC_API_URL/)
+    assert.doesNotMatch(message, /Check your connection/)
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
+  }
+})
+
+test('a CORS block is reported as CORS, not as a connection problem', () => {
+  const previousWindow = globalThis.window
+  globalThis.window = { location: { hostname: 'home-battery-optimisation-git-agent-63cd07.vercel.app' } }
+  try {
+    const err = new ApiError('Network error.', {
+      kind: 'network',
+      url: 'https://home-battery-optimisation.onrender.com/sites/me',
+    })
+    err.reachability = 'blocked' // what the /health probe concluded
+    const message = friendlyError(err)
+    assert.match(message, /The API at https:\/\/home-battery-optimisation\.onrender\.com is up/)
+    assert.match(message, /CORS/)
+    assert.match(message, /FRONTEND_ORIGINS/)
+    assert.match(message, /home-battery-optimisation-git-agent-63cd07\.vercel\.app/)
+    assert.doesNotMatch(message, /Check your connection/)
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
+  }
+})
+
+test('deadline and connection failures get honest, actionable copy', () => {
+  const timeout = friendlyError(
+    new ApiError('x', { kind: 'timeout', url: 'http://localhost:8000/sites/me', timeoutMs: 30000 })
+  )
+  assert.match(timeout, /waking up/)
+  assert.match(timeout, /http:\/\/localhost:8000/, 'names the origin it tried')
+  assert.match(timeout, /within 30s/)
+
+  const localNetwork = friendlyError(
+    new ApiError('x', { kind: 'network', url: 'http://localhost:8000/sites/me' })
+  )
+  assert.match(localNetwork, /Could not reach the API at http:\/\/localhost:8000/)
+  assert.match(localNetwork, /local backend looks like it is not running/)
+
+  const remoteNetwork = friendlyError(
+    new ApiError('x', { kind: 'network', url: 'https://api.example.com/sites/me' })
+  )
+  assert.match(remoteNetwork, /Check your connection/)
+  assert.doesNotMatch(remoteNetwork, /localhost/)
+
   assert.equal(friendlyError(new ApiError('NO_DATA: nope', { status: 400 })), 'NO_DATA: nope')
 })
 
