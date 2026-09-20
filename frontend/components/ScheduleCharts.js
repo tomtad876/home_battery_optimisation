@@ -209,8 +209,8 @@ export default function ScheduleCharts({ schedule, historicData, nowTime, dayPri
       mergedSeries('Solar (kWh)', '#FBBF24', 'pv_kwh', 'pv_estimate'),
       mergedSeries('Demand (kWh)', '#A78BFA', 'load_kwh', 'demand'),
       mergedSeries('Grid Import (kWh)', '#EF4444', 'grid_import_kwh', 'grid_import'),
-      { label: 'Import Price (p/kWh)', data: labels.map(l => priceMap[l]?.price ?? null), borderColor: '#FB923C', backgroundColor: '#FB923C', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y1' },
-      { label: 'Export Price (p/kWh)', data: labels.map(l => priceMap[l]?.export_price ?? null), borderColor: '#34D399', backgroundColor: '#34D399', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y1' },
+      { label: 'Import Price (p/kWh)', data: labels.map(l => priceMap[l]?.price ?? forecastMap[l]?.price ?? null), borderColor: '#FB923C', backgroundColor: '#FB923C', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y1' },
+      { label: 'Export Price (p/kWh)', data: labels.map(l => priceMap[l]?.export_price ?? forecastMap[l]?.export_price ?? null), borderColor: '#34D399', backgroundColor: '#34D399', borderWidth: 1.5, pointRadius: 0, tension: 0.3, yAxisID: 'y1' },
     ],
   }
 
