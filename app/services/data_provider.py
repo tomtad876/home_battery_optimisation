@@ -45,14 +45,31 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
             GROUP BY hh_slot
         ),
 
-        -- Generate complete half-hourly series: now through +36h
+        -- 7-day time-of-day average of historical Agile prices, used to fill
+        -- the horizon beyond the last published price so the optimiser still
+        -- sees tomorrow's typical shape (cheap overnight, evening peak).
+        price_history AS (
+            SELECT
+                floor(date_part('hour', period_end) * 2
+                    + date_part('minute', period_end) / 30) AS hh_slot,
+                AVG(import_price) AS avg_import_price,
+                AVG(export_price) AS avg_export_price
+            FROM public.agile_rates
+            WHERE period_end < now()
+            GROUP BY hh_slot
+        ),
+
+        -- Generate complete half-hourly series: now through +48h. Longer than
+        -- the old 36h so the optimiser can see a full next day (Agile prices
+        -- publish ~4pm day-ahead) and hold charge for tomorrow's evening peak
+        -- instead of dumping at the end of today.
         forecast_series AS (
             SELECT 
                 gs AS period_end,
                 floor(date_part('hour', gs) * 2 + date_part('minute', gs) / 30) AS hh_slot
             FROM generate_series(
                 date_trunc('hour', now()) + interval '30 minutes',
-                now() + interval '36 hours',
+                now() + interval '48 hours',
                 interval '30 minutes'
             ) gs
         )
@@ -60,9 +77,10 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         SELECT
             f.period_end as period_end,
             COALESCE(sf.solar_kwh, 0.0) AS pv_estimate,
-            ar.import_price as price,
-            ar.export_price,
-            COALESCE(h.avg_kwh, 0.3) AS demand
+            COALESCE(ar.import_price, ph.avg_import_price) AS price,
+            COALESCE(ar.export_price, ph.avg_export_price) AS export_price,
+            COALESCE(h.avg_kwh, 0.3) AS demand,
+            (ar.import_price IS NULL) AS is_synthetic
         FROM forecast_series f
         LEFT JOIN solcast_forecast sf
             ON sf.period_end = f.period_end
@@ -71,7 +89,8 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
             ON f.hh_slot = h.hh_slot
         LEFT JOIN agile_rates ar
             ON ar.period_end = f.period_end
-        WHERE ar.import_price IS NOT NULL
+        LEFT JOIN price_history ph
+            ON f.hh_slot = ph.hh_slot
         ORDER BY f.period_end;
         """)
         result = session.execute(sql, {"site_id": site_id})
@@ -83,7 +102,7 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
             rows = []
         df = pd.DataFrame(rows)
         if df.empty:
-            return pd.DataFrame(columns=["period_end", "pv_estimate", "price", "export_price", "demand"]) 
+            return pd.DataFrame(columns=["period_end", "pv_estimate", "price", "export_price", "demand", "is_synthetic"]) 
 
         # Normalize column names and types
         # handle both tz-aware and tz-naive timestamps returned by the DB
@@ -92,13 +111,19 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         except TypeError:
             df["period_end"] = pd.to_datetime(df["period_end"]).dt.tz_localize("UTC")
         df["pv_estimate"] = df["pv_estimate"].astype(float)
-        # price: may be NULL
+        # price: may be NULL (backfilled from price_history when unpublished)
         df["price"] = df["price"].astype(float)
         df["export_price"] = df["export_price"].astype(float)
         # demand_forecast_kwh -> kWh for half-hour
         df["demand"] = df["demand"].astype(float) 
+        # is_synthetic: True where the price is a backfilled average rather than
+        # a published rate. Postgres boolean may arrive as bool or 't'/'f'.
+        if "is_synthetic" in df.columns:
+            df["is_synthetic"] = df["is_synthetic"].astype(str).str.lower().isin(["t", "true", "1"])
+        else:
+            df["is_synthetic"] = False
 
-        return df[["period_end", "pv_estimate", "price", "export_price", "demand"]]
+        return df[["period_end", "pv_estimate", "price", "export_price", "demand", "is_synthetic"]]
     finally:
         session.close()
 

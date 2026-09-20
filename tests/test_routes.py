@@ -240,6 +240,47 @@ class TestOptimiserRoute:
         # initial SOC falls back to live SOC from the (mocked) realtime call
         assert kwargs["initial_soc_pct"] == 50.0
 
+    @patch('app.api.routes.mvp_cost_minimiser')
+    @patch('app.api.routes.get_optimiser_inputs')
+    def test_optimise_mvp_excludes_synthetic_tail(self, mock_inputs, mock_optimiser, client):
+        """Synthetic (backfilled-price) rows must not leak into summary or schedule."""
+        mock_inputs.return_value = pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
+            "pv_estimate": [0.0, 0.5, 1.0, 0.3],
+            "price": [15.0, 12.0, 50.0, 20.0],
+            "export_price": [6.0, 4.8, 20.0, 8.0],
+            "demand": [0.5, 0.5, 0.5, 0.5],
+            "is_synthetic": [False, False, True, True],
+        })
+        mock_optimiser.return_value = pd.DataFrame({
+            "cost_gbp": [1.0, 2.0, 999.0, 999.0],
+            "pv_estimate": [0.0, 0.5, 1.0, 0.3],
+            "demand": [0.5, 0.5, 0.5, 0.5],
+            "grid_import_kwh": [0.1, 0.1, 5.0, 5.0],
+            "grid_export_kwh": [0.2, 0.2, 5.0, 5.0],
+            "export_price_pence": [6.0, 4.8, 20.0, 8.0],
+            "is_synthetic": [False, False, True, True],
+        })
+
+        response = client.post("/optimise/mvp", json={})
+        assert response.status_code == 200
+        data = response.json()
+
+        # Schedule excludes synthetic rows and the flag column itself
+        assert len(data["schedule"]) == 2
+        for row in data["schedule"]:
+            assert "is_synthetic" not in row
+
+        # Summary covers real rows only (cost 1+2, solar 0.5, demand 1.0, import 0.2, export 0.4)
+        summary = data["summary"]
+        assert summary["total_cost_gbp"] == pytest.approx(3.0)
+        assert summary["total_solar_kwh"] == pytest.approx(0.5)
+        assert summary["total_demand_kwh"] == pytest.approx(1.0)
+        assert summary["total_grid_import_kwh"] == pytest.approx(0.2)
+        assert summary["total_grid_export_kwh"] == pytest.approx(0.4)
+        # export revenue uses export_price_pence: (0.2*6 + 0.2*4.8)/100
+        assert summary["total_grid_export_revenue_gbp"] == pytest.approx((0.2 * 6.0 + 0.2 * 4.8) / 100.0)
+
     @patch('app.api.routes.get_optimiser_inputs')
     def test_optimise_mvp_requires_initial_soc(self, mock_inputs, client, mock_realtime):
         """With no initial SOC and no live SOC, refuse rather than guess 50%."""

@@ -7,6 +7,22 @@ import pandas as pd
 import numpy as np
 
 
+def _default_salvage_value_pence(inputs_df: pd.DataFrame) -> float:
+    """Default salvage value: mean import price of the real (non-backfilled) periods.
+
+    The salvage value is the price the optimiser uses to value energy left in the
+    battery at the end of the horizon. Defaulting it to the mean of the *real*
+    published prices (excluding any synthetic/backfilled tail) makes it a typical
+    "cost of refilling tomorrow" without letting estimated tail prices distort it.
+    """
+    if "is_synthetic" in inputs_df.columns:
+        real_prices = inputs_df.loc[~inputs_df["is_synthetic"].astype(bool), "price"]
+    else:
+        real_prices = inputs_df["price"]
+    real_prices = real_prices.dropna()
+    return float(real_prices.mean()) if not real_prices.empty else 0.0
+
+
 def mvp_cost_minimiser(
     inputs_df: pd.DataFrame,
     battery_capacity_kwh: float = 15.0,
@@ -15,6 +31,7 @@ def mvp_cost_minimiser(
     max_soc_pct: float = 100.0,
     charge_power_kw: float = 3.0,
     discharge_power_kw: float = 3.0,
+    salvage_value_pence: float | None = None,
 ) -> pd.DataFrame:
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.
@@ -29,6 +46,11 @@ def mvp_cost_minimiser(
         min_soc_pct, max_soc_pct: Bounds on SOC
         charge_power_kw: Max charge power (kW)
         discharge_power_kw: Max discharge power (kW)
+        salvage_value_pence: Value (pence/kWh) of energy left in the battery at
+            the end of the horizon. Prevents the terminal timestep from dumping
+            stored energy to the grid just because export price is positive —
+            it must beat the cost of replacing that energy. Defaults to the mean
+            import price of the *real* (non-backfilled) periods.
 
     Returns:
         DataFrame with columns: period_end, demand, pv_estimate, price, batt_charge_kwh,
@@ -67,6 +89,16 @@ def mvp_cost_minimiser(
 
     export_prices_pence = inputs_df["export_price"].values
     export_prices_gbp = export_prices_pence / 100.0
+
+    # Terminal salvage value: energy left in the battery at the end of the
+    # horizon is worth something (it will be used tomorrow). Default to the
+    # mean import price of the real (non-backfilled) periods so the optimiser
+    # only discharges in the tail when the export price beats the typical cost
+    # of refilling. A synthetic/backfilled tail is excluded from the average —
+    # its prices are estimated and shouldn't set the terminal floor.
+    if salvage_value_pence is None:
+        salvage_value_pence = _default_salvage_value_pence(inputs_df)
+    salvage_value_gbp = salvage_value_pence / 100.0
 
     # Battery and system parameters
     dt = 0.5  # half-hour in hours
@@ -124,6 +156,10 @@ def mvp_cost_minimiser(
     except Exception:
         pass
 
+    # Terminal salvage: reward energy left in the battery at the horizon end so
+    # the optimiser doesn't dump it to the grid for less than its replacement cost.
+    cost = cost - salvage_value_gbp * soc[n - 1]
+
     problem = cp.Problem(cp.Minimize(cost), constraints)
     problem.solve(verbose=False)
 
@@ -136,6 +172,10 @@ def mvp_cost_minimiser(
     soc_pct = (soc.value / battery_capacity_kwh) * 100
 
     result_df = inputs_df[["period_end"]].copy()
+    # Carry through the synthetic-price flag so downstream (routes/UI) can tell
+    # real forecast data from backfilled prices used only to shape the tail.
+    if "is_synthetic" in inputs_df.columns:
+        result_df["is_synthetic"] = inputs_df["is_synthetic"].astype(bool).to_numpy()
     result_df["demand"] = demand
     result_df["pv_estimate"] = solar_gen
     result_df["price"] = inputs_df["price"]

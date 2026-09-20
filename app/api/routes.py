@@ -330,16 +330,30 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
             discharge_power_kw=batt_discharge_kw,
         )
 
+        # The schedule spans the full 48h horizon including a backfilled-price
+        # tail (marked `is_synthetic`). That tail exists only to make the
+        # optimisation aware of tomorrow; its prices are estimated, so both the
+        # summary and the returned schedule cover real (published) data only.
+        real_schedule = schedule
+        if "is_synthetic" in schedule.columns:
+            real_schedule = schedule[~schedule["is_synthetic"].astype(bool)]
+
         # Compute summary stats
-        total_cost = float(schedule["cost_gbp"].sum())
-        total_solar = float(schedule["pv_estimate"].sum())
-        total_demand = float(schedule["demand"].sum())
-        total_import = float(schedule["grid_import_kwh"].sum())
-        total_export = float(schedule["grid_export_kwh"].sum())
-        if "export_price" in schedule.columns:
-            total_export_revenue = float((schedule["grid_export_kwh"] * schedule["export_price"] / 100.0).sum())
+        total_cost = float(real_schedule["cost_gbp"].sum())
+        total_solar = float(real_schedule["pv_estimate"].sum())
+        total_demand = float(real_schedule["demand"].sum())
+        total_import = float(real_schedule["grid_import_kwh"].sum())
+        total_export = float(real_schedule["grid_export_kwh"].sum())
+        if "export_price_pence" in real_schedule.columns:
+            total_export_revenue = float((real_schedule["grid_export_kwh"] * real_schedule["export_price_pence"] / 100.0).sum())
         else:
             total_export_revenue = 0.0
+
+        schedule_out = (
+            real_schedule.drop(columns=["is_synthetic"])
+            if "is_synthetic" in real_schedule.columns
+            else real_schedule
+        )
 
         return {
             "status": "success",
@@ -352,7 +366,7 @@ def optimise_mvp(req: MVPOptimiseRequest, user: dict = Depends(verify_token)):
                 "total_grid_export_kwh": total_export,
                 "total_grid_export_revenue_gbp": total_export_revenue,
             },
-            "schedule": schedule.to_dict(orient="records"),
+            "schedule": schedule_out.to_dict(orient="records"),
         }
     except HTTPException:
         raise

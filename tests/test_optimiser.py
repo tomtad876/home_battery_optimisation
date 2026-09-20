@@ -134,3 +134,62 @@ class TestOptimiser:
         first_net = result.iloc[0]["batt_charge_kwh"] - result.iloc[0]["batt_discharge_kwh"]
         expected_soc_after_first = expected_first_soc + first_net
         np.testing.assert_allclose(result.iloc[0]["soc_kwh"], expected_soc_after_first, rtol=1e-5)
+
+    def _constant_price_inputs(self, n=12, price=20.0, export_price=8.0):
+        """Flat-price, no-solar, no-demand inputs — isolates terminal behaviour."""
+        periods = pd.date_range("2025-09-20", periods=n, freq="30min", tz="UTC")
+        return pd.DataFrame({
+            "period_end": periods,
+            "pv_estimate": [0.0] * n,
+            "price": [price] * n,
+            "export_price": [export_price] * n,
+            "demand": [0.0] * n,
+        })
+
+    def _flat_params(self):
+        return dict(
+            battery_capacity_kwh=5.0,
+            initial_soc_pct=50.0,
+            min_soc_pct=20.0,
+            max_soc_pct=90.0,
+            charge_power_kw=3.0,
+            discharge_power_kw=3.0,
+        )
+
+    def test_salvage_value_prevents_terminal_dump(self):
+        """A salvage value above the export price stops the end-of-horizon dump."""
+        inputs = self._constant_price_inputs()
+
+        # No salvage: positive export price and no future obligation → dump to min SOC.
+        dumped = mvp_cost_minimiser(inputs_df=inputs, **self._flat_params(), salvage_value_pence=0.0)
+        assert dumped["soc_pct"].iloc[-1] < 25.0, (
+            f"Without salvage the battery should dump to ~min SOC, got {dumped['soc_pct'].iloc[-1]:.1f}%"
+        )
+
+        # Salvage above export price (40p vs 8p export): holding charge is worth
+        # more than exporting it, so the battery should stay near its initial SOC.
+        held = mvp_cost_minimiser(inputs_df=inputs, **self._flat_params(), salvage_value_pence=40.0)
+        assert held["soc_pct"].iloc[-1] > 45.0, (
+            f"With salvage above export the battery should hold charge, got {held['soc_pct'].iloc[-1]:.1f}%"
+        )
+
+    def test_default_salvage_excludes_synthetic_prices(self):
+        """Default salvage = mean of real prices; synthetic tail must not inflate it."""
+        from app.core.optimiser import _default_salvage_value_pence
+        inputs = self._constant_price_inputs(n=8, price=20.0)
+        # Mark the last 4 periods as synthetic (backfilled) at 200p/kWh.
+        inputs["is_synthetic"] = [False] * 4 + [True] * 4
+        inputs.loc[inputs["is_synthetic"], "price"] = 200.0
+        assert _default_salvage_value_pence(inputs) == 20.0
+
+        # Without the flag column, the default is the mean of all prices.
+        plain = inputs.drop(columns=["is_synthetic"])
+        assert _default_salvage_value_pence(plain) == 110.0  # (4*20 + 4*200)/8
+
+    def test_is_synthetic_propagates_to_result(self):
+        """The synthetic flag is carried through to the optimiser output."""
+        inputs = self._constant_price_inputs(n=4)
+        inputs["is_synthetic"] = [False, False, True, True]
+        result = mvp_cost_minimiser(inputs_df=inputs, **self._flat_params())
+        assert "is_synthetic" in result.columns
+        assert list(result["is_synthetic"]) == [False, False, True, True]
