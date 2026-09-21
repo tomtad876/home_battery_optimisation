@@ -108,7 +108,16 @@ function resolveWindows(body: Record<string, unknown> | null, url: URL): Window[
   const begin = param("begin");
   const end = param("end");
   if (begin && end) {
-    return [{ begin: Number(begin), end: Number(end) }];
+    const b = Number(begin);
+    const e = Number(end);
+    if (!Number.isFinite(b) || !Number.isFinite(e) || e <= b) {
+      throw new Error("Invalid begin/end (expect epoch ms, end > begin)");
+    }
+    const spanDays = (e - b) / 86400000;
+    if (spanDays > MAX_BACKFILL_DAYS + 1) {
+      throw new Error(`begin/end spans ${Math.round(spanDays)} days; max ${MAX_BACKFILL_DAYS}`);
+    }
+    return [{ begin: b, end: e }];
   }
 
   const day = param("day");
@@ -222,9 +231,10 @@ serve(async (req: Request) => {
         }
 
         // onConflict is a comma-separated string (the old array only worked
-        // because JS coerced it to "period_end,variable").
+        // because JS coerced it to "period_end,variable"). Must match the
+        // UNIQUE(site_id, period_end, variable) constraint.
         const upsertResp = await client.from("historic_energy_data").upsert(intervals, {
-          onConflict: "period_end,variable",
+          onConflict: "site_id,period_end,variable",
         });
 
         if (upsertResp.error) {

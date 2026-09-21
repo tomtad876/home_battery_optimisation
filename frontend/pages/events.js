@@ -192,16 +192,16 @@ export default function Events() {
       setSiteLoading(true)
       apiFetch('/sites/me', { accessToken: token })
         .then((res) => {
-          if (!mounted) return
+          if (!mounted || token !== lastToken) return
           setSite(res?.site ?? null)
           return loadData(token)
         })
         .catch((err) => {
-          if (!mounted) return
+          if (!mounted || token !== lastToken) return
           if (err?.status !== 404) setSiteError(friendlyError(err, 'Could not load your site.'))
           setSite(null)
         })
-        .finally(() => { if (mounted) setSiteLoading(false) })
+        .finally(() => { if (mounted && token === lastToken) setSiteLoading(false) })
     }
 
     supabase.auth.getSession().then(({ data }) => {
