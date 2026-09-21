@@ -169,35 +169,51 @@ export default function Events() {
 
   useEffect(() => {
     let mounted = true
-    supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return
-      const u = data?.session?.user ?? null
-      setUser(u)
-      if (u && data?.session?.access_token) {
-        apiFetch('/sites/me', { accessToken: data.session.access_token })
-          .then((res) => {
-            if (!mounted) return
-            setSite(res?.site ?? null)
-            loadData(data.session.access_token)
-          })
-          .catch((err) => {
-            if (!mounted) return
-            if (err?.status !== 404) setSiteError(friendlyError(err, 'Could not load your site.'))
-            setSite(null)
-          })
-          .finally(() => mounted && setSiteLoading(false))
-      } else {
+    let lastToken = null
+
+    // One session handler for both the initial getSession() and the auth
+    // listener. Previously the listener only called loadData() — it never
+    // fetched /sites/me nor cleared siteLoading, so a SIGNED_IN fired on load
+    // (or by signing in on this page) left the UI stuck on "Connecting…".
+    // Dedupe on the access token so the getSession + listener double-fire on
+    // mount doesn't fetch everything twice.
+    const applySession = (session) => {
+      const token = session?.access_token ?? null
+      if (token && token === lastToken) return
+      lastToken = token
+
+      setUser(session?.user ?? null)
+      setSiteError(null)
+      if (!token) {
+        setSite(null)
         setSiteLoading(false)
+        return
       }
+      setSiteLoading(true)
+      apiFetch('/sites/me', { accessToken: token })
+        .then((res) => {
+          if (!mounted) return
+          setSite(res?.site ?? null)
+          return loadData(token)
+        })
+        .catch((err) => {
+          if (!mounted) return
+          if (err?.status !== 404) setSiteError(friendlyError(err, 'Could not load your site.'))
+          setSite(null)
+        })
+        .finally(() => { if (mounted) setSiteLoading(false) })
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) applySession(data?.session ?? null)
     })
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!mounted) return
-      if (event === 'SIGNED_IN') {
-        setUser(session?.user ?? null)
-        setSiteLoading(true)
-        if (session?.access_token) loadData(session.access_token)
+      if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+        applySession(session ?? null)
       } else if (event === 'SIGNED_OUT') {
+        lastToken = null
         setUser(null)
         setSite(null)
         setCandidates([])
@@ -318,6 +334,12 @@ export default function Events() {
     } catch (err) {
       setError(friendlyError(err, 'Could not delete the event.'))
     }
+  }
+
+  const patchEvent = async (id, body) => {
+    const accessToken = await getToken()
+    const res = await apiFetch(`/events/${id}`, { method: 'PATCH', accessToken, body })
+    setLabelled((prev) => prev.map((e) => (e.id === id ? (res?.event ?? { ...e, ...body }) : e)))
   }
 
   const saveInventory = async (day, appliances, notes) => {
@@ -453,6 +475,7 @@ export default function Events() {
                   splitCandidate={splitCandidate}
                   rejectCandidate={rejectCandidate}
                   deleteEvent={deleteEvent}
+                  patchEvent={patchEvent}
                 />
               )}
 
@@ -498,7 +521,7 @@ function TabButton({ active, onClick, children }) {
 
 function ReviewTab({
   days, grouped, loading, candidates, labelled, busyKey,
-  patchCandidate, confirmCandidate, splitCandidate, rejectCandidate, deleteEvent,
+  patchCandidate, confirmCandidate, splitCandidate, rejectCandidate, deleteEvent, patchEvent,
 }) {
   return (
     <div className="space-y-8">
@@ -672,34 +695,137 @@ function ReviewTab({
           <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Labelled events ({labelled.length})</h3>
           <div className="space-y-2">
             {labelled.slice(0, 50).map((e) => (
-              <div key={e.id} className="flex items-center justify-between bg-white rounded-lg shadow px-4 py-2">
-                <div className="flex items-center gap-3 text-sm flex-wrap">
-                  <span className="font-medium text-gray-800">{APPLIANCE_LABELS[e.appliance] || e.appliance}</span>
-                  <span className="text-gray-500">
-                    {new Date(e.start_time).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/London' })}
-                  </span>
-                  {e.cleanliness && (
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      e.cleanliness === 'clean' ? 'bg-green-100 text-green-800'
-                      : e.cleanliness === 'contaminated' ? 'bg-red-100 text-red-800'
-                      : 'bg-amber-100 text-amber-800'
-                    }`}>{cleanLabel(e.cleanliness)}</span>
-                  )}
-                  {e.target_temp != null && (
-                    <span className="text-xs text-gray-500">{e.target_temp}°C</span>
-                  )}
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    e.status === 'confirmed' ? 'bg-green-100 text-green-800'
-                    : e.status === 'planned' ? 'bg-blue-100 text-blue-800'
-                    : 'bg-gray-100 text-gray-600'
-                  }`}>{e.status}</span>
-                </div>
-                <button onClick={() => deleteEvent(e.id)} className="text-sm text-red-500 hover:text-red-700">Delete</button>
-              </div>
+              <LabelledEventRow key={e.id} event={e} onDelete={deleteEvent} onSave={patchEvent} />
             ))}
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function LabelledEventRow({ event, onDelete, onSave }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState(null)
+
+  const when = new Date(event.start_time).toLocaleString('en-GB', {
+    dateStyle: 'medium', timeStyle: 'short', timeZone: 'Europe/London',
+  })
+
+  const startEdit = () => {
+    setDraft({
+      appliance: event.appliance,
+      cleanliness: event.cleanliness || 'unsure',
+      targetTemp: event.target_temp ?? '',
+      notes: event.notes || '',
+    })
+    setErr(null)
+    setEditing(true)
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setErr(null)
+    try {
+      await onSave(event.id, {
+        appliance: draft.appliance,
+        cleanliness: draft.cleanliness,
+        target_temp: draft.targetTemp === '' ? null : Number(draft.targetTemp),
+        notes: draft.notes || null,
+      })
+      setEditing(false)
+    } catch (error) {
+      setErr(friendlyError(error, 'Could not update the event.'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!editing) {
+    return (
+      <div data-event={event.id} className="flex items-center justify-between bg-white rounded-lg shadow px-4 py-2">
+        <div className="flex items-center gap-3 text-sm flex-wrap">
+          <span className="font-medium text-gray-800">{APPLIANCE_LABELS[event.appliance] || event.appliance}</span>
+          <span className="text-gray-500">{when}</span>
+          {event.cleanliness && (
+            <span className={`text-xs px-2 py-0.5 rounded-full ${
+              event.cleanliness === 'clean' ? 'bg-green-100 text-green-800'
+              : event.cleanliness === 'contaminated' ? 'bg-red-100 text-red-800'
+              : 'bg-amber-100 text-amber-800'
+            }`}>{cleanLabel(event.cleanliness)}</span>
+          )}
+          {event.target_temp != null && <span className="text-xs text-gray-500">{event.target_temp}°C</span>}
+          <span className={`text-xs px-2 py-0.5 rounded-full ${
+            event.status === 'confirmed' ? 'bg-green-100 text-green-800'
+            : event.status === 'planned' ? 'bg-blue-100 text-blue-800'
+            : 'bg-gray-100 text-gray-600'
+          }`}>{event.status}</span>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <button onClick={startEdit} data-edit className="text-sm text-blue-600 hover:text-blue-800">Edit</button>
+          <button onClick={() => onDelete(event.id)} className="text-sm text-red-500 hover:text-red-700">Delete</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div data-event={event.id} className="bg-white rounded-lg shadow p-4 space-y-3 border border-blue-200">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-gray-700">{when}</span>
+        <span className="text-xs text-gray-400">editing</span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">Appliance</label>
+          <select
+            value={draft.appliance}
+            onChange={(e) => setDraft((d) => ({ ...d, appliance: e.target.value }))}
+            className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+          >
+            {APPLIANCES.map((a) => <option key={a} value={a}>{APPLIANCE_LABELS[a] || a}</option>)}
+          </select>
+        </div>
+        {draft.appliance === 'cosy' && (
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Cosy target temp</label>
+            <select
+              value={draft.targetTemp}
+              onChange={(e) => setDraft((d) => ({ ...d, targetTemp: e.target.value }))}
+              className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+            >
+              <option value="">—</option>
+              <option value="50">50°C</option>
+              <option value="60">60°C</option>
+            </select>
+          </div>
+        )}
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-500 mb-1">Was anything else running?</label>
+        <CleanlinessControl value={draft.cleanliness} onChange={(v) => setDraft((d) => ({ ...d, cleanliness: v }))} />
+      </div>
+      <input
+        type="text"
+        placeholder="Notes (optional)"
+        value={draft.notes}
+        onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+        className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+      />
+      <div className="flex items-center gap-2">
+        <button
+          onClick={save}
+          disabled={saving}
+          data-save
+          className="px-3 py-1.5 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <button onClick={() => setEditing(false)} className="text-sm text-gray-500">Cancel</button>
+      </div>
+      {err && <p className="text-sm text-red-600">{err}</p>}
     </div>
   )
 }
