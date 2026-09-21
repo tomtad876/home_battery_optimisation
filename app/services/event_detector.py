@@ -27,16 +27,24 @@ BASELINE_DAYS = 30
 TRACE_PAD_SAMPLES = 6  # ±30 min around each event for the sparkline
 
 
-def _suggest(hod: float, mean_kw: float, flatness: float) -> tuple[str, float]:
-    """Suggest an appliance label + rough confidence (0..1)."""
-    if flatness < 0.2:  # flat = resistive
+def _suggest(hod: float, mean_kw: float, flatness: float, dur_min: int) -> tuple[str, float]:
+    """Suggest an appliance label + rough confidence (0..1).
+
+    Deliberately caps confidence at 0.6: the previous heuristic emitted 0.90 for
+    "flat overnight = cosy", but those runs are the heat pump's *space-heating*
+    mode (the Cosy and the heating are the same appliance — mutually exclusive
+    modes of one heat pump), so the confident suggestions were the wrong ones.
+    Nothing here is reliable enough to call "confident" until templates are fit
+    from clean (isolated) labels — the UI treats <0.7 as a guess.
+    """
+    if flatness < 0.2:  # steady/resistive → heat pump (either mode) or oven
+        if dur_min >= 90 or (mean_kw >= 2.5 and dur_min >= 45):
+            return ("heating", 0.55)  # long steady run = space heating
+        if 10 <= hod <= 15:
+            return ("cosy", 0.60)  # midday DHW top-up (the genuine signature)
         if hod <= 6:
-            return ("cosy", 0.90)
-        if 10 <= hod <= 15 and mean_kw < 2.5:
-            return ("cosy", 0.85)
-        if mean_kw >= 2.5:
-            return ("oven", 0.50)
-        return ("other", 0.35)
+            return ("cosy", 0.50)  # overnight DHW — genuinely ambiguous w/ heating
+        return ("cosy" if mean_kw < 2.5 else "heating", 0.45)
     if 17 <= hod <= 21:  # spiky evening = cooking/dishwasher
         return ("dishwasher", 0.40)
     return ("washing_machine", 0.40)
@@ -139,13 +147,14 @@ def detect_events(site_id: str, days: int = 7) -> list[dict]:
             for t, k in zip(win["t"], win["kw"])
         ]
 
-        suggested, confidence = _suggest(hod, mean_kw, flatness)
+        dur_min = int(len(sub) * 5)
+        suggested, confidence = _suggest(hod, mean_kw, flatness, dur_min)
         events.append({
             "start_time": start_dt.isoformat(),
             "end_time": end_dt.isoformat(),
             "start_local": start_local.strftime("%Y-%m-%d %H:%M"),
             "end_local": end_local.strftime("%H:%M"),
-            "dur_min": int(len(sub) * 5),
+            "dur_min": dur_min,
             "peak_kw": round(float(kw.max()), 2),
             "mean_kw": round(mean_kw, 2),
             "flatness": round(flatness, 2),
