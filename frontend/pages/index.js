@@ -282,11 +282,11 @@ export default function Home() {
         <meta name="description" content="Optimise battery schedules for lowest cost" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
-      <main className="min-h-screen bg-gray-50">
+      <main className="min-h-screen bg-canvas">
         <div className="max-w-7xl mx-auto py-12 px-4">
           <header className="mb-12">
-            <h1 className="text-4xl font-bold text-gray-900">Battery Optimiser</h1>
-            <p className="text-gray-600 mt-2">Minimise electricity costs with intelligent battery dispatch</p>
+            <h1 className="text-4xl font-bold text-ink">Battery Optimiser</h1>
+            <p className="text-ink-muted mt-2">Minimise electricity costs with intelligent battery dispatch</p>
           </header>
 
           {/* Not logged in */}
@@ -299,10 +299,10 @@ export default function Home() {
           {/* Logged in, loading site check */}
           {user && siteLoading && (
             <div className="text-center py-12">
-              <p className="text-gray-500">
+              <p className="text-ink-muted">
                 {serverWaking ? 'Still waking the server — retrying…' : 'Connecting…'}
               </p>
-              <p className="text-gray-400 text-sm mt-2">
+              <p className="text-ink-faint text-sm mt-2">
                 The server sleeps when idle, so the first request can take up to a minute.
               </p>
             </div>
@@ -310,12 +310,12 @@ export default function Home() {
 
           {/* Logged in, site check failed for a reason that isn't "no site yet" */}
           {user && !siteLoading && siteError && (
-            <div className="max-w-md mx-auto bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-              <p className="text-red-800 font-medium">Could not load your site</p>
-              <p className="text-red-700 text-sm mt-2">{siteError}</p>
+            <div className="max-w-md mx-auto bg-danger-surface border border-danger-border rounded-card p-6 text-center">
+              <p className="text-danger-ink font-medium">Could not load your site</p>
+              <p className="text-danger-ink text-sm mt-2">{siteError}</p>
               <button
                 onClick={retrySite}
-                className="mt-4 bg-red-600 text-white py-2 px-5 rounded-md font-medium hover:bg-red-700"
+                className="mt-4 bg-danger-ink text-canvas py-2 px-5 rounded-md font-medium hover:brightness-95"
               >
                 Try again
               </button>
@@ -331,11 +331,11 @@ export default function Home() {
           {user && !siteLoading && site && (
             <>
               <div className="flex items-center justify-between mb-6">
-                <p className="text-sm text-gray-600">Signed in as <span className="font-medium">{user?.email}</span></p>
+                <p className="text-sm text-ink-muted">Signed in as <span className="font-medium">{user?.email}</span></p>
                 <div className="flex items-center gap-4">
-                  <a href="/events" className="text-sm text-blue-600 hover:text-blue-800">Events</a>
-                  <a href="/settings" className="text-sm text-blue-600 hover:text-blue-800">Settings</a>
-                  <button onClick={handleLogout} className="text-sm text-red-600 hover:text-red-800">Sign out</button>
+                  <a href="/events" className="text-sm text-ink-muted hover:text-ink">Events</a>
+                  <a href="/settings" className="text-sm text-ink-muted hover:text-ink">Settings</a>
+                  <button onClick={handleLogout} className="text-sm text-danger-ink hover:brightness-110">Sign out</button>
                 </div>
               </div>
 
@@ -343,20 +343,20 @@ export default function Home() {
                   lives in Settings; the backend reads it, so there is nothing to
                   configure here — only "where is the battery right now", which it
                   cannot know without live data. */}
-              <div className="flex flex-wrap items-center justify-between gap-4 mb-6 bg-white rounded-lg shadow px-4 py-3">
-                  <div className="text-sm text-gray-600">
+              <div className="flex flex-wrap items-center justify-between gap-4 mb-6 bg-surface border border-hairline rounded-card shadow-card px-4 py-3">
+                  <div className="text-sm text-ink-muted">
                     {hasLiveSoc ? (
                       <span>
-                        Live SOC <span className="font-medium text-gray-900">{formatNumber(realtimeData.soc_pct, 0)}%</span>
+                        Live SOC <span className="font-medium text-ink">{formatNumber(realtimeData.soc_pct, 0)}%</span>
                       </span>
                     ) : (
-                      <span className="text-gray-500">Live SOC unavailable</span>
+                      <span className="text-ink-muted">Live SOC unavailable</span>
                     )}
-                    {lastRunAt && <span className="text-gray-400"> · optimised {lastRunAt}</span>}
+                    {lastRunAt && <span className="text-ink-faint"> · optimised {lastRunAt}</span>}
                   </div>
                   <div className="flex items-center gap-3">
                     {!hasLiveSoc && (
-                      <label className="text-sm text-gray-600 flex items-center gap-2">
+                      <label className="text-sm text-ink-muted flex items-center gap-2">
                         Initial SOC %
                         <input
                           type="number"
@@ -365,7 +365,7 @@ export default function Home() {
                           value={manualSoc}
                           onChange={(e) => setManualSoc(e.target.value)}
                           placeholder="50"
-                          className="w-20 px-2 py-1 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+                          className="w-20 px-2 py-1 bg-surface-2 border border-hairline rounded-md text-sm text-ink focus:ring-signal focus:border-signal focus:outline-none"
                         />
                       </label>
                     )}
@@ -373,7 +373,7 @@ export default function Home() {
                       onClick={runOptimiser}
                       disabled={loading || (!hasLiveSoc && manualSoc === '')}
                       title={!hasLiveSoc && manualSoc === '' ? 'Enter an initial SOC % first' : undefined}
-                      className="bg-blue-600 text-white py-2 px-5 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="bg-signal text-canvas py-2 px-5 rounded-md font-medium hover:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {loading ? 'Optimising…' : schedule ? 'Re-run optimiser' : 'Run optimiser'}
                     </button>
@@ -382,29 +382,29 @@ export default function Home() {
 
                 <div>
                   {realtimeData.error && (
-                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-                      <p className="text-yellow-800"><strong>Live battery data unavailable:</strong> {realtimeData.error}</p>
-                      <p className="text-yellow-700 text-sm mt-1">Set an initial SOC above and run the optimiser manually.</p>
+                    <div className="bg-warn-surface border border-warn-border rounded-card p-4 mb-6">
+                      <p className="text-warn-ink"><strong>Live battery data unavailable:</strong> {realtimeData.error}</p>
+                      <p className="text-warn-ink text-sm mt-1">Set an initial SOC above and run the optimiser manually.</p>
                     </div>
                   )}
 
                   {error === 'no_data' ? (
-                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 mb-6">
-                      <h3 className="text-amber-800 font-semibold mb-2">No forecast data yet</h3>
-                      <p className="text-amber-700 mb-3">
+                    <div className="bg-warn-surface border border-warn-border rounded-card p-6 mb-6">
+                      <h3 className="text-warn-ink font-semibold mb-2">No forecast data yet</h3>
+                      <p className="text-warn-ink mb-3">
                         We need your solar forecast and energy usage data to generate an optimisation schedule.
                       </p>
-                      <p className="text-amber-600 text-sm mb-3">
+                      <p className="text-warn-ink text-sm mb-3">
                         Make sure your Solcast API key, Solcast PV System ID, and FoxESS API key are configured.
                         Data is fetched daily by our background services — it may take up to 24 hours after first setup.
                       </p>
-                      <a href="/settings" className="text-sm font-medium text-amber-700 underline hover:text-amber-900">
+                      <a href="/settings" className="text-sm font-medium text-warn-ink underline hover:brightness-110">
                         Configure API credentials →
                       </a>
                     </div>
                   ) : error ? (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-                      <p className="text-red-800"><strong>Error:</strong> {error}</p>
+                    <div className="bg-danger-surface border border-danger-border rounded-card p-4 mb-6">
+                      <p className="text-danger-ink"><strong>Error:</strong> {error}</p>
                     </div>
                   ) : null}
 
@@ -412,27 +412,27 @@ export default function Home() {
                     <>
                       {/* Summary Cards */}
                       <div className="grid grid-cols-2 gap-4 mb-6">
-                        <div className="bg-white rounded-lg shadow p-4">
-                          <p className="text-sm text-gray-600">Total Cost</p>
-                          <p className="text-2xl font-bold text-blue-600">
+                        <div className="bg-surface border border-hairline rounded-card shadow-card p-4">
+                          <p className="text-sm text-ink-muted">Total Cost</p>
+                          <p className="text-2xl font-bold text-ink">
                             £{formatNumber(summary?.total_cost_gbp, 2)}
                           </p>
                         </div>
-                        <div className="bg-white rounded-lg shadow p-4">
-                          <p className="text-sm text-gray-600">Grid Export Revenue</p>
-                          <p className="text-2xl font-bold text-green-600">
+                        <div className="bg-surface border border-hairline rounded-card shadow-card p-4">
+                          <p className="text-sm text-ink-muted">Grid Export Revenue</p>
+                          <p className="text-2xl font-bold text-gridout">
                             £{formatNumber(summary?.total_grid_export_revenue_gbp ?? ((summary?.total_grid_export_kwh || 0) * 0.15 / 100), 2)}
                           </p>
                         </div>
-                        <div className="bg-white rounded-lg shadow p-4">
-                          <p className="text-sm text-gray-600">Solar Generation</p>
-                          <p className="text-2xl font-bold text-yellow-600">
+                        <div className="bg-surface border border-hairline rounded-card shadow-card p-4">
+                          <p className="text-sm text-ink-muted">Solar Generation</p>
+                          <p className="text-2xl font-bold text-solar">
                             {formatNumber(summary?.total_solar_kwh, 1)} kWh
                           </p>
                         </div>
-                        <div className="bg-white rounded-lg shadow p-4">
-                          <p className="text-sm text-gray-600">Total Demand</p>
-                          <p className="text-2xl font-bold text-purple-600">
+                        <div className="bg-surface border border-hairline rounded-card shadow-card p-4">
+                          <p className="text-sm text-ink-muted">Total Demand</p>
+                          <p className="text-2xl font-bold text-load">
                             {formatNumber(summary?.total_demand_kwh, 1)} kWh
                           </p>
                         </div>
@@ -441,12 +441,12 @@ export default function Home() {
                       {/* Charts */}
                       {IS_DEV && (
                         <div className="flex items-center gap-2 mb-4">
-                          <label className="text-sm text-gray-600 flex items-center gap-2 cursor-pointer select-none">
+                          <label className="text-sm text-ink-muted flex items-center gap-2 cursor-pointer select-none">
                             <input
                               type="checkbox"
                               checked={showEstimated}
                               onChange={(e) => setShowEstimated(e.target.checked)}
-                              className="h-4 w-4 text-blue-600 focus:ring-blue-500"
+                              className="h-4 w-4 text-signal focus:ring-signal"
                             />
                             Show estimated tail (backfilled prices — test only)
                           </label>
@@ -455,11 +455,11 @@ export default function Home() {
                       <ScheduleCharts schedule={schedule} historicData={realtimeData.history} nowTime={realtimeData.fetchedAt} dayPrices={dayPrices} showEstimated={showEstimated} />
 
                       {/* Push to Inverter */}
-                      <div className="bg-white rounded-lg shadow p-6 mt-6">
+                      <div className="bg-surface border border-hairline rounded-card shadow-card p-6 mt-6">
                         <div className="flex items-center justify-between">
                           <div>
-                            <h3 className="font-semibold text-gray-900">Push to Inverter</h3>
-                            <p className="text-sm text-gray-500 mt-1">
+                            <h3 className="font-semibold text-ink">Push to Inverter</h3>
+                            <p className="text-sm text-ink-muted mt-1">
                               Preview the instructions, then send this optimised schedule to your FoxESS inverter. The schedule will be active until the next push or until you change it manually.
                             </p>
                           </div>
@@ -467,14 +467,14 @@ export default function Home() {
                             <button
                               onClick={handlePreview}
                               disabled={previewing || pushing}
-                              className="bg-blue-600 text-white py-2 px-5 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="bg-surface-2 border border-hairline text-ink py-2 px-5 rounded-md font-medium hover:border-ink-faint disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {previewing ? 'Previewing...' : 'Preview'}
                             </button>
                             <button
                               onClick={handlePush}
                               disabled={pushing || previewing}
-                              className="bg-green-600 text-white py-2 px-6 rounded-md font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="bg-signal text-canvas py-2 px-6 rounded-md font-medium hover:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {pushing ? 'Pushing...' : 'Push now'}
                             </button>
@@ -484,7 +484,7 @@ export default function Home() {
                         {/* Preview instructions */}
                         {previewResult && (
                           <div className="mt-4">
-                            <p className={`text-sm font-medium ${previewResult.success ? 'text-blue-700' : 'text-red-700'}`}>
+                            <p className={`text-sm font-medium ${previewResult.success ? 'text-ink' : 'text-danger-ink'}`}>
 {previewResult.success
                               ? `Preview: ${previewResult.schedule.length} instruction(s) to push (SOC ${previewResult.soc}%) — times in Europe/London${previewResult.remainMode ? ` · remain mode: ${previewResult.remainMode}` : ''}`
                               : `Error: ${previewResult.error}`}
@@ -493,27 +493,27 @@ export default function Home() {
                               <div className="mt-2 overflow-x-auto">
                                 <table className="text-xs w-full">
                                   <thead>
-                                    <tr className="border-b border-gray-200">
-                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Time</th>
-                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Mode</th>
-                                      <th className="text-left py-1 text-gray-500 font-medium">Details</th>
+                                    <tr className="border-b border-hairline">
+                                      <th className="text-left py-1 pr-3 text-ink-muted font-medium">Time</th>
+                                      <th className="text-left py-1 pr-3 text-ink-muted font-medium">Mode</th>
+                                      <th className="text-left py-1 text-ink-muted font-medium">Details</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {previewResult.schedule.map((g, i) => (
-                                      <tr key={i} className="border-b border-gray-100">
-                                        <td className="py-1 pr-3 font-mono text-gray-700">{g.start}–{g.end}</td>
+                                      <tr key={i} className="border-b border-hairline">
+                                        <td className="py-1 pr-3 font-mono text-ink-muted">{g.start}–{g.end}</td>
                                         <td className="py-1 pr-3">
                                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
-                                            g.mode === 'ForceCharge' ? 'bg-blue-100 text-blue-800' :
-                                            g.mode === 'ForceDischarge' ? 'bg-orange-100 text-orange-800' :
-                                            g.mode === 'Feedin' ? 'bg-green-100 text-green-800' :
-                                            'bg-gray-100 text-gray-800'
+                                            g.mode === 'ForceCharge' ? 'bg-signal/15 text-signal' :
+                                            g.mode === 'ForceDischarge' ? 'bg-discharge/15 text-discharge' :
+                                            g.mode === 'Feedin' ? 'bg-gridout/15 text-gridout' :
+                                            'bg-surface-2 text-ink-muted'
                                           }`}>
                                             {g.mode}
                                           </span>
                                         </td>
-                                        <td className="py-1 text-gray-500">{g.description}</td>
+                                        <td className="py-1 text-ink-muted">{g.description}</td>
                                       </tr>
                                     ))}
                                   </tbody>
@@ -525,7 +525,7 @@ export default function Home() {
 
                         {pushResult && (
                           <div className="mt-3">
-                            <p className={`text-sm font-medium ${pushResult.success ? 'text-green-700' : 'text-red-700'}`}>
+                            <p className={`text-sm font-medium ${pushResult.success ? 'text-ok-ink' : 'text-danger-ink'}`}>
                               {pushResult.success
                                 ? `Sent ${pushResult.groups} groups to inverter (SOC ${pushResult.soc}%)`
                                 : `Error: ${pushResult.error}`}
@@ -534,27 +534,27 @@ export default function Home() {
                               <div className="mt-3 overflow-x-auto">
                                 <table className="text-xs w-full">
                                   <thead>
-                                    <tr className="border-b border-gray-200">
-                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Time</th>
-                                      <th className="text-left py-1 pr-3 text-gray-500 font-medium">Mode</th>
-                                      <th className="text-left py-1 text-gray-500 font-medium">Details</th>
+                                    <tr className="border-b border-hairline">
+                                      <th className="text-left py-1 pr-3 text-ink-muted font-medium">Time</th>
+                                      <th className="text-left py-1 pr-3 text-ink-muted font-medium">Mode</th>
+                                      <th className="text-left py-1 text-ink-muted font-medium">Details</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {pushResult.schedule.map((g, i) => (
-                                      <tr key={i} className="border-b border-gray-100">
-                                        <td className="py-1 pr-3 font-mono text-gray-700">{g.start}–{g.end}</td>
+                                      <tr key={i} className="border-b border-hairline">
+                                        <td className="py-1 pr-3 font-mono text-ink-muted">{g.start}–{g.end}</td>
                                         <td className="py-1 pr-3">
                                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
-                                            g.mode === 'ForceCharge' ? 'bg-blue-100 text-blue-800' :
-                                            g.mode === 'ForceDischarge' ? 'bg-orange-100 text-orange-800' :
-                                            g.mode === 'Feedin' ? 'bg-green-100 text-green-800' :
-                                            'bg-gray-100 text-gray-800'
+                                            g.mode === 'ForceCharge' ? 'bg-signal/15 text-signal' :
+                                            g.mode === 'ForceDischarge' ? 'bg-discharge/15 text-discharge' :
+                                            g.mode === 'Feedin' ? 'bg-gridout/15 text-gridout' :
+                                            'bg-surface-2 text-ink-muted'
                                           }`}>
                                             {g.mode}
                                           </span>
                                         </td>
-                                        <td className="py-1 text-gray-500">{g.description}</td>
+                                        <td className="py-1 text-ink-muted">{g.description}</td>
                                       </tr>
                                     ))}
                                   </tbody>
@@ -568,8 +568,8 @@ export default function Home() {
                   )}
 
                   {!schedule && !loading && !error && (
-                    <div className="bg-white rounded-lg shadow p-12 text-center">
-                      <p className="text-gray-500 text-lg">
+                    <div className="bg-surface border border-hairline rounded-card shadow-card p-12 text-center">
+                      <p className="text-ink-muted text-lg">
                         {hasLiveSoc ? 'Optimising…' : 'Enter an initial SOC and run the optimiser to see the schedule'}
                       </p>
                     </div>
