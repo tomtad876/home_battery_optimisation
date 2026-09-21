@@ -13,21 +13,28 @@ ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip,
 // The Cosy and the heating are two modes of the same heat pump (mutually
 // exclusive), so the labels name the mode, not a separate device.
 const APPLIANCES = [
-  'cosy', 'heating', 'washing_machine', 'tumble_dryer', 'dishwasher', 'oven', 'gaming', 'combined', 'other',
+  'cosy', 'heating', 'hob', 'oven', 'airfryer', 'cooking',
+  'washing_machine', 'tumble_dryer', 'dishwasher', 'gaming', 'combined', 'other',
 ]
 
 const APPLIANCE_LABELS = {
   cosy: 'Cosy (heat pump · hot water)',
   heating: 'Heating (heat pump · radiators)',
+  hob: 'Hob',
+  oven: 'Oven',
+  airfryer: 'Air fryer',
+  cooking: 'Cooking (unsure which)',
   washing_machine: 'Washing machine',
   tumble_dryer: 'Tumble dryer',
   dishwasher: 'Dishwasher',
-  oven: 'Oven / cooker',
   gaming: 'Gaming / PC',
   combined: 'Multiple / combined',
   other: 'Other',
   not_appliance: 'Not an appliance',
 }
+
+// Cooking sub-classes where the meter can't reliably tell them apart.
+const AMBIGUOUS_COOKING = ['hob', 'airfryer', 'cooking']
 
 // Cleanliness is the primary filter for template fitting: signatures must be
 // fit on isolated examples only.
@@ -571,6 +578,12 @@ function ReviewTab({
                       </div>
                     )}
                   </div>
+
+                  {AMBIGUOUS_COOKING.includes(c.appliance) && (
+                    <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                      An air fryer and a single hob ring look almost identical on the meter — check the Daily tab if you&rsquo;re not sure.
+                    </p>
+                  )}
 
                   <div className="mt-3">
                     <label className="block text-xs font-medium text-gray-500 mb-1">Was anything else running?</label>

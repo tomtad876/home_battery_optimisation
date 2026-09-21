@@ -27,7 +27,8 @@ BASELINE_DAYS = 30
 TRACE_PAD_SAMPLES = 6  # ±30 min around each event for the sparkline
 
 
-def _suggest(hod: float, mean_kw: float, flatness: float, dur_min: int) -> tuple[str, float]:
+def _suggest(hod: float, mean_kw: float, peak_kw: float, flatness: float,
+             dur_min: int) -> tuple[str, float]:
     """Suggest an appliance label + rough confidence (0..1).
 
     Deliberately caps confidence at 0.6: the previous heuristic emitted 0.90 for
@@ -36,18 +37,37 @@ def _suggest(hod: float, mean_kw: float, flatness: float, dur_min: int) -> tuple
     modes of one heat pump), so the confident suggestions were the wrong ones.
     Nothing here is reliable enough to call "confident" until templates are fit
     from clean (isolated) labels — the UI treats <0.7 as a guess.
+
+    Cooking is split only as far as the meter can actually support it:
+    duration separates the oven (long/sustained), peak separates the hob
+    (multi-ring, >=2.5 kW); a short low-power event is genuinely ambiguous
+    between a single hob ring and an air fryer, so it stays "cooking".
     """
-    if flatness < 0.2:  # steady/resistive → heat pump (either mode) or oven
+    # Evening meal prep (Tom's data: 17:30-19:00, 15-30 min, peaks 2.3-3.5 kW).
+    if 17 <= hod <= 20.5 and mean_kw >= 1.2:
+        if dur_min >= 45:
+            return ("oven", 0.50)   # long sustained draw = oven
+        if peak_kw >= 2.5:
+            return ("hob", 0.50)    # multi-ring / boiling
+        return ("cooking", 0.40)    # short + low power: hob ring vs air fryer
+
+    if flatness < 0.2:  # steady/resistive → heat pump (either mode)
         if dur_min >= 90 or (mean_kw >= 2.5 and dur_min >= 45):
             return ("heating", 0.55)  # long steady run = space heating
         if 10 <= hod <= 15:
-            return ("cosy", 0.60)  # midday DHW top-up (the genuine signature)
+            # Genuine midday DHW runs ~30+ min; a short midday flat burst is
+            # more likely a hob/air fryer (Tom labelled exactly that, 2026-09-21).
+            if dur_min >= 25:
+                return ("cosy", 0.55)
+            return ("cooking", 0.40)
         if hod <= 6:
             return ("cosy", 0.50)  # overnight DHW — genuinely ambiguous w/ heating
         return ("cosy" if mean_kw < 2.5 else "heating", 0.45)
-    if 17 <= hod <= 21:  # spiky evening = cooking/dishwasher
-        return ("dishwasher", 0.40)
-    return ("washing_machine", 0.40)
+
+    # duty-cycled daytime = laundry / dishwasher
+    if 10 <= hod <= 16:
+        return ("washing_machine", 0.40)
+    return ("dishwasher", 0.40)
 
 
 def _overlap_fraction(a0, a1, b0, b1) -> float:
@@ -148,7 +168,7 @@ def detect_events(site_id: str, days: int = 7) -> list[dict]:
         ]
 
         dur_min = int(len(sub) * 5)
-        suggested, confidence = _suggest(hod, mean_kw, flatness, dur_min)
+        suggested, confidence = _suggest(hod, mean_kw, float(kw.max()), flatness, dur_min)
         events.append({
             "start_time": start_dt.isoformat(),
             "end_time": end_dt.isoformat(),

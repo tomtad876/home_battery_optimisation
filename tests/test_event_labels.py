@@ -43,13 +43,35 @@ class TestSuggest:
     def test_long_steady_run_suggests_heating_not_cosy(self):
         # The documented mislabel: a long, flat overnight run is the heat pump's
         # space-heating mode, not the Cosy (same appliance, other mode).
-        appliance, conf = _suggest(hod=3.0, mean_kw=2.9, flatness=0.1, dur_min=120)
+        appliance, conf = _suggest(3.0, 2.9, 3.0, 0.1, 120)
         assert appliance == "heating"
         assert conf < 0.7
 
     def test_midday_steady_run_suggests_cosy(self):
-        appliance, conf = _suggest(hod=11.5, mean_kw=1.4, flatness=0.1, dur_min=35)
+        appliance, conf = _suggest(11.5, 1.4, 1.5, 0.1, 35)
         assert appliance == "cosy"
+        assert conf < 0.7
+
+    def test_evening_multiring_suggests_hob(self):
+        # Tom's 17:58 event: peak 3.46 kW over 30 min.
+        appliance, _ = _suggest(17.96, 2.64, 3.46, 0.29, 30)
+        assert appliance == "hob"
+
+    def test_evening_long_sustained_suggests_oven(self):
+        appliance, _ = _suggest(18.0, 2.0, 2.5, 0.3, 60)
+        assert appliance == "oven"
+
+    def test_short_low_power_evening_is_cooking_not_dishwasher(self):
+        # The old heuristic called every evening spike a dishwasher; Tom's
+        # evening loads are cooking.
+        appliance, _ = _suggest(19.13, 1.95, 2.29, 0.19, 25)
+        assert appliance == "cooking"
+
+    def test_short_midday_flat_burst_is_not_confidently_cosy(self):
+        # Tom labelled 2026-09-21 11:47 as a hob-only cook (1.29 kW, 15 min,
+        # flatness 0.03) — the old heuristic would have said "cosy" at 0.60.
+        appliance, conf = _suggest(11.78, 1.29, 1.29, 0.03, 15)
+        assert appliance == "cooking"
         assert conf < 0.7
 
     def test_no_suggestion_is_ever_confident(self):
@@ -59,11 +81,11 @@ class TestSuggest:
             for mean_kw in (0.6, 1.4, 2.9):
                 for flatness in (0.05, 0.4):
                     for dur_min in (20, 60, 120):
-                        _, conf = _suggest(hod, mean_kw, flatness, dur_min)
+                        _, conf = _suggest(hod, mean_kw, mean_kw * 1.3, flatness, dur_min)
                         assert conf < 0.7
 
     def test_duty_cycled_run_is_not_preloaded_as_cosy(self):
-        appliance, _ = _suggest(hod=3.0, mean_kw=1.2, flatness=0.4, dur_min=40)
+        appliance, _ = _suggest(3.0, 1.2, 1.5, 0.4, 40)
         assert appliance in {"washing_machine", "dishwasher"}
 
 
