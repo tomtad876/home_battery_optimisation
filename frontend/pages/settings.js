@@ -12,6 +12,8 @@ export default function CredentialsSettings() {
   const [solcastSystemId, setSolcastSystemId] = useState('');
   const [foxessApiKey, setFoxessApiKey] = useState('');
   const [foxessDeviceSn, setFoxessDeviceSn] = useState('');
+  const [octopusApiKey, setOctopusApiKey] = useState('');
+  const [octopusAccountNumber, setOctopusAccountNumber] = useState('');
 
   const [capacityKwh, setCapacityKwh] = useState('13.5');
   const [maxChargeKw, setMaxChargeKw] = useState('5.0');
@@ -69,6 +71,8 @@ export default function CredentialsSettings() {
         setSolcastSystemId(config.solcast_system_id || '');
         setFoxessApiKey(config.foxess_api_key || '');
         setFoxessDeviceSn(config.foxess_device_sn || '');
+        setOctopusApiKey(config.octopus_api_key || '');
+        setOctopusAccountNumber(config.octopus_account_number || '');
         setCapacityKwh(String(battery.capacity_kwh ?? '5.0'));
         setMaxChargeKw(String(battery.max_charge_kw ?? '3.0'));
         setMaxDischargeKw(String(battery.max_discharge_kw ?? '3.0'));
@@ -116,6 +120,8 @@ export default function CredentialsSettings() {
       if (solcastSystemId) credBody.solcast_system_id = solcastSystemId;
       if (foxessApiKey) credBody.foxess_api_key = foxessApiKey;
       if (foxessDeviceSn) credBody.foxess_device_sn = foxessDeviceSn;
+      if (octopusApiKey) credBody.octopus_api_key = octopusApiKey;
+      if (octopusAccountNumber) credBody.octopus_account_number = octopusAccountNumber;
 
       await apiFetch('/batteries/me/provider_config', {
         method: 'PUT',
@@ -289,6 +295,26 @@ export default function CredentialsSettings() {
             value={foxessDeviceSn}
             onChange={(e) => setFoxessDeviceSn(e.target.value)}
             placeholder="Your FoxESS device SN"
+            style={styles.input}
+          />
+
+          <h2 style={styles.sectionTitle}>Octopus (Heat Pump)</h2>
+
+          <label style={styles.label}>Developer API Key</label>
+          <input
+            type="password"
+            value={octopusApiKey}
+            onChange={(e) => setOctopusApiKey(e.target.value)}
+            placeholder="sk_live_..."
+            style={styles.input}
+          />
+
+          <label style={styles.label}>Account Number</label>
+          <input
+            type="text"
+            value={octopusAccountNumber}
+            onChange={(e) => setOctopusAccountNumber(e.target.value)}
+            placeholder="e.g. A-1234ABCD"
             style={styles.input}
           />
 
