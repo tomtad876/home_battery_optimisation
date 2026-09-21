@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pydantic import BaseModel
 from typing import Optional
 
@@ -13,7 +14,7 @@ from app.services.data_provider import (
 )
 from app.services.foxess import classify_optimiser_output, _merge_groups, classify_and_push
 from app.services.event_detector import detect_events
-from app.models.demandevent import DemandEvent
+from app.models.demandevent import DemandEvent, DemandDayInventory
 from app.core.database import SessionLocal
 
 router = APIRouter()
@@ -605,6 +606,9 @@ class CreateEventRequest(BaseModel):
     status: str = "confirmed"
     energy_kwh: Optional[float] = None
     source: str = "manual"
+    cleanliness: Optional[str] = None
+    target_temp: Optional[float] = None
+    start_temp: Optional[float] = None
     notes: Optional[str] = None
 
 
@@ -615,7 +619,20 @@ class UpdateEventRequest(BaseModel):
     status: Optional[str] = None
     energy_kwh: Optional[float] = None
     source: Optional[str] = None
+    cleanliness: Optional[str] = None
+    target_temp: Optional[float] = None
+    start_temp: Optional[float] = None
     notes: Optional[str] = None
+
+
+class InventoryRequest(BaseModel):
+    appliances: list[str] = []
+    notes: Optional[str] = None
+
+
+# Allowed values for cleanliness. Kept in the schema layer (not the DB) so the
+# API can validate and the frontend has one source of truth to mirror.
+CLEANLINESS_VALUES = {"clean", "unsure", "contaminated"}
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -635,6 +652,9 @@ def _event_to_dict(e: DemandEvent) -> dict:
         "status": e.status,
         "energy_kwh": e.energy_kwh,
         "source": e.source,
+        "cleanliness": e.cleanliness,
+        "target_temp": e.target_temp,
+        "start_temp": e.start_temp,
         "notes": e.notes,
     }
 
@@ -676,6 +696,8 @@ def get_detected_events(days: int = 7, user: dict = Depends(verify_token)):
 @router.post("/events")
 def create_event(req: CreateEventRequest, user: dict = Depends(verify_token)):
     site_id = _get_site_id(user)
+    if req.cleanliness is not None and req.cleanliness not in CLEANLINESS_VALUES:
+        raise HTTPException(status_code=422, detail=f"cleanliness must be one of {sorted(CLEANLINESS_VALUES)}")
     session = SessionLocal()
     try:
         e = DemandEvent(
@@ -686,6 +708,9 @@ def create_event(req: CreateEventRequest, user: dict = Depends(verify_token)):
             status=req.status,
             energy_kwh=req.energy_kwh,
             source=req.source,
+            cleanliness=req.cleanliness,
+            target_temp=req.target_temp,
+            start_temp=req.start_temp,
             notes=req.notes,
         )
         session.add(e)
@@ -711,6 +736,8 @@ def update_event(event_id: str, req: UpdateEventRequest, user: dict = Depends(ve
         if str(e.site_id) != str(site_id):
             raise HTTPException(status_code=403, detail="Not your event")
         data = req.model_dump(exclude_unset=True)
+        if data.get("cleanliness") is not None and data["cleanliness"] not in CLEANLINESS_VALUES:
+            raise HTTPException(status_code=422, detail=f"cleanliness must be one of {sorted(CLEANLINESS_VALUES)}")
         if data.get("start_time") is not None:
             data["start_time"] = _to_utc(data["start_time"])
         if "end_time" in data:
@@ -741,5 +768,70 @@ def delete_event(event_id: str, user: dict = Depends(verify_token)):
         session.delete(e)
         session.commit()
         return {"deleted": event_id}
+    finally:
+        session.close()
+
+
+# --- Daily appliance inventory ("what ran today") ---
+#
+# The per-window event card can't tell whether a window was contaminated when it
+# is chosen; a per-day inventory can. A day whose inventory is a single appliance
+# makes every detected window that day provably clean — the primary filter for
+# Phase 2 template fitting.
+
+def _inventory_to_dict(r: DemandDayInventory) -> dict:
+    return {
+        "day": r.day.isoformat(),
+        "appliances": r.appliances or [],
+        "notes": r.notes,
+    }
+
+
+@router.get("/events/inventory")
+def list_inventory(days: int = 14, user: dict = Depends(verify_token)):
+    """List day inventories for the last `days` local days (newest first)."""
+    site_id = _get_site_id(user)
+    today = datetime.now(ZoneInfo("Europe/London")).date()
+    start = today - timedelta(days=max(days, 1) - 1)
+    session = SessionLocal()
+    try:
+        rows = (
+            session.query(DemandDayInventory)
+            .filter(
+                DemandDayInventory.site_id == site_id,
+                DemandDayInventory.day >= start,
+                DemandDayInventory.day <= today,
+            )
+            .order_by(DemandDayInventory.day.desc())
+            .all()
+        )
+        return {"days": [_inventory_to_dict(r) for r in rows]}
+    finally:
+        session.close()
+
+
+@router.put("/events/inventory/{day}")
+def upsert_inventory(day: date, req: InventoryRequest, user: dict = Depends(verify_token)):
+    """Create or replace the appliance inventory for a local calendar day."""
+    site_id = _get_site_id(user)
+    session = SessionLocal()
+    try:
+        row = (
+            session.query(DemandDayInventory)
+            .filter(
+                DemandDayInventory.site_id == site_id,
+                DemandDayInventory.day == day,
+            )
+            .one_or_none()
+        )
+        if row is None:
+            row = DemandDayInventory(site_id=site_id, day=day)
+            session.add(row)
+        row.appliances = list(req.appliances)
+        row.notes = req.notes
+        row.updated_at = datetime.now(timezone.utc)
+        session.commit()
+        session.refresh(row)
+        return {"day": _inventory_to_dict(row)}
     finally:
         session.close()

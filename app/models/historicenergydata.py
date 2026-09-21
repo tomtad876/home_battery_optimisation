@@ -16,6 +16,7 @@ class HistoricEnergyData(Base):
     site_id = Column(UUID(as_uuid=True), ForeignKey("sites.id"), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint('period_end', 'variable', name='uq_period_variable'),
+        # site_id included so two tenants can hold the same slot/variable.
+        UniqueConstraint('site_id', 'period_end', 'variable', name='uq_site_period_variable'),
     )
 
