@@ -92,6 +92,7 @@ class TestForecast:
     @patch('app.services.forecast.solcast.get_solar_forecast')
     @patch('app.services.forecast.foxess.init_api')
     @patch('app.services.forecast.foxess.get_agile_prices')
+    @patch.dict('os.environ', {'FOXESS_API_KEY': 'test-key'})
     def test_forecast_solar_and_prices(self, mock_prices, mock_init, mock_solar):
         """Test combined solar + prices forecast."""
         mock_solar.return_value = pd.DataFrame({

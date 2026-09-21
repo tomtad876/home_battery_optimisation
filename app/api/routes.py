@@ -166,6 +166,9 @@ class UpdateProviderConfigRequest(BaseModel):
     solcast_system_id: str | None = None
     foxess_api_key: str | None = None
     foxess_device_sn: str | None = None
+    # Octopus heat-pump telemetry (developer API key -> Kraken token)
+    octopus_api_key: str | None = None
+    octopus_account_number: str | None = None
 
 @router.put("/batteries/me/provider_config")
 def put_provider_config(req: UpdateProviderConfigRequest, user: dict = Depends(verify_token)):

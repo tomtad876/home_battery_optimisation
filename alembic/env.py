@@ -40,6 +40,7 @@ import app.models.agilerates
 import app.models.solcastforecast
 import app.models.historicenergydata
 import app.models.demandevent
+import app.models.heatpump
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

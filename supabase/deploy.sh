@@ -58,6 +58,16 @@ else
   exit 1
 fi
 
+# Deploy Fetch-heatpump function
+echo "5. Deploying fetch-heatpump..."
+supabase functions deploy fetch-heatpump --no-verify-jwt
+if [ $? -eq 0 ]; then
+  echo "✓ fetch-heatpump deployed"
+else
+  echo "✗ fetch-heatpump deployment failed"
+  exit 1
+fi
+
 echo ""
 echo "=========================================="
 echo "All functions deployed successfully!"
@@ -70,6 +80,7 @@ echo "   - SOLCAST_API_KEY"
 echo "   - SOLCAST_PV_SYSTEM_ID"
 echo "   - FOXESS_API_KEY"
 echo "   - SUPABASE_SERVICE_ROLE_KEY (from Dashboard → Settings → API)"
+echo "   (Octopus/FoxESS per-user keys live encrypted in provider_config, not here)"
 echo ""
 echo "3. Set up scheduling in Supabase Scheduler or external scheduler"
 echo ""
