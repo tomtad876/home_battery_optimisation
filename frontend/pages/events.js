@@ -39,9 +39,9 @@ const AMBIGUOUS_COOKING = ['hob', 'airfryer', 'cooking']
 // Cleanliness is the primary filter for template fitting: signatures must be
 // fit on isolated examples only.
 const CLEANLINESS = [
-  { value: 'clean', label: '✓ Clean isolated', on: 'bg-green-600 text-white border-green-600' },
-  { value: 'unsure', label: '? Not sure', on: 'bg-amber-500 text-white border-amber-500' },
-  { value: 'contaminated', label: '⚠ Others running', on: 'bg-red-600 text-white border-red-600' },
+  { value: 'clean', label: '✓ Clean isolated', on: 'bg-ok-surface text-ok-ink border-ok-border' },
+  { value: 'unsure', label: '? Not sure', on: 'bg-warn-surface text-warn-ink border-warn-border' },
+  { value: 'contaminated', label: '⚠ Others running', on: 'bg-danger-surface text-danger-ink border-danger-border' },
 ]
 
 const cleanLabel = (v) => CLEANLINESS.find((c) => c.value === v)?.label || 'Not annotated'
@@ -78,8 +78,8 @@ function Sparkline({ trace }) {
     datasets: [{
       label: 'kW',
       data: trace.map((p) => p.kw),
-      borderColor: '#6366F1',
-      backgroundColor: 'rgba(99,102,241,0.08)',
+      borderColor: '#64748B',
+      backgroundColor: 'rgba(100,116,139,0.08)',
       borderWidth: 1.5,
       pointRadius: 0,
       tension: 0.25,
@@ -105,7 +105,7 @@ function CleanlinessControl({ value, onChange }) {
           onClick={() => onChange(c.value)}
           aria-pressed={value === c.value}
           className={`px-2.5 py-1 rounded-md text-xs font-medium border ${
-            value === c.value ? c.on : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-100'
+            value === c.value ? c.on : 'bg-surface-2 text-ink-muted border-hairline hover:border-ink-faint'
           }`}
         >
           {c.label}
@@ -404,11 +404,11 @@ export default function Events() {
         <title>Demand Events</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
-      <main className="min-h-screen bg-gray-50">
+      <main className="min-h-screen bg-canvas">
         <div className="max-w-5xl mx-auto py-12 px-4">
           <header className="mb-8">
-            <h1 className="text-3xl font-bold text-gray-900">Demand Events</h1>
-            <p className="text-gray-600 mt-2">
+            <h1 className="text-3xl font-bold text-ink">Demand Events</h1>
+            <p className="text-ink-muted mt-2">
               Label the appliances behind your demand spikes so the forecast learns your routine.
             </p>
           </header>
@@ -419,46 +419,46 @@ export default function Events() {
             </div>
           )}
 
-          {user && siteLoading && <p className="text-center text-gray-500 py-12">Connecting…</p>}
+          {user && siteLoading && <p className="text-center text-ink-faint py-12">Connecting…</p>}
 
           {user && !siteLoading && siteError && (
-            <div className="max-w-md mx-auto bg-red-50 border border-red-200 rounded-lg p-6 text-center">
-              <p className="text-red-800 font-medium">Could not load your site</p>
-              <p className="text-red-700 text-sm mt-2">{siteError}</p>
+            <div className="max-w-md mx-auto bg-danger-surface border border-danger-border rounded-card p-6 text-center">
+              <p className="text-danger-ink font-medium">Could not load your site</p>
+              <p className="text-danger-ink text-sm mt-2">{siteError}</p>
             </div>
           )}
 
           {user && !siteLoading && !site && !siteError && (
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-6 text-center">
-              <p className="text-amber-800">Set up your site on the dashboard first.</p>
-              <a href="/" className="text-amber-700 underline text-sm mt-2 inline-block">Go to dashboard →</a>
+            <div className="bg-warn-surface border border-warn-border rounded-card p-6 text-center">
+              <p className="text-warn-ink">Set up your site on the dashboard first.</p>
+              <a href="/" className="text-warn-ink underline text-sm mt-2 inline-block">Go to dashboard →</a>
             </div>
           )}
 
           {user && !siteLoading && site && (
             <>
               <div className="flex items-center justify-between mb-6">
-                <p className="text-sm text-gray-600">Signed in as <span className="font-medium">{user?.email}</span></p>
+                <p className="text-sm text-ink-muted">Signed in as <span className="font-medium">{user?.email}</span></p>
                 <div className="flex items-center gap-4">
-                  <a href="/" className="text-sm text-blue-600 hover:text-blue-800">Dashboard</a>
-                  <a href="/settings" className="text-sm text-blue-600 hover:text-blue-800">Settings</a>
-                  <button onClick={handleLogout} className="text-sm text-red-600 hover:text-red-800">Sign out</button>
+                  <a href="/" className="text-sm text-ink-muted hover:text-ink">Dashboard</a>
+                  <a href="/settings" className="text-sm text-ink-muted hover:text-ink">Settings</a>
+                  <button onClick={handleLogout} className="text-sm bg-danger-surface border border-danger-border text-danger-ink hover:brightness-110">Sign out</button>
                 </div>
               </div>
 
               {/* Tabs */}
               <div className="flex gap-2 mb-6">
                 <TabButton active={tab === 'review'} onClick={() => setTab('review')}>
-                  Review {needsReview > 0 && <span className="ml-1 bg-white/20 rounded-full px-2 py-0.5 text-xs">{needsReview}</span>}
+                  Review {needsReview > 0 && <span className="ml-1 bg-canvas/20 rounded-full px-2 py-0.5 text-xs">{needsReview}</span>}
                 </TabButton>
                 <TabButton active={tab === 'daily'} onClick={() => setTab('daily')}>Daily</TabButton>
                 <TabButton active={tab === 'log'} onClick={() => setTab('log')}>Log event</TabButton>
               </div>
 
               {error && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6 flex items-start justify-between gap-4">
-                  <p className="text-red-800 text-sm">{error}</p>
-                  <button onClick={() => setError(null)} className="text-red-500 text-sm">dismiss</button>
+                <div className="bg-danger-surface border border-danger-border rounded-card p-4 mb-6 flex items-start justify-between gap-4">
+                  <p className="text-danger-ink text-sm">{error}</p>
+                  <button onClick={() => setError(null)} className="bg-danger-surface border border-danger-border text-danger-ink hover:brightness-110 text-sm">dismiss</button>
                 </div>
               )}
 
@@ -511,7 +511,7 @@ function TabButton({ active, onClick, children }) {
     <button
       onClick={onClick}
       className={`px-4 py-2 rounded-md font-medium text-sm ${
-        active ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300'
+        active ? 'bg-signal text-canvas hover:brightness-95' : 'bg-surface-2 border border-hairline text-ink hover:border-ink-faint'
       }`}
     >
       {children}
@@ -525,19 +525,19 @@ function ReviewTab({
 }) {
   return (
     <div className="space-y-8">
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-ink-faint">
         Mark each window <span className="font-medium">clean isolated</span> only if nothing else was
         running — templates are fit from clean examples, so a contaminated label is worse than none.
       </p>
 
       {loading && candidates.length === 0 && (
-        <p className="text-center text-gray-500 py-8">Detecting events…</p>
+        <p className="text-center text-ink-faint py-8">Detecting events…</p>
       )}
 
       {!loading && candidates.length === 0 && (
-        <div className="bg-white rounded-lg shadow p-8 text-center">
-          <p className="text-gray-700 font-medium">Nothing to review 🎉</p>
-          <p className="text-gray-500 text-sm mt-2">
+        <div className="bg-surface rounded-card shadow-card p-8 text-center">
+          <p className="text-ink-muted font-medium">Nothing to review 🎉</p>
+          <p className="text-ink-faint text-sm mt-2">
             Every detected event is already labelled. New events will appear here as they happen.
           </p>
         </div>
@@ -545,26 +545,26 @@ function ReviewTab({
 
       {days.map((day) => (
         <div key={day}>
-          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">{day}</h3>
+          <h3 className="text-sm font-semibold text-ink-faint uppercase tracking-wide mb-3">{day}</h3>
           <div className="space-y-3">
             {grouped[day].map((c) => {
               const busy = busyKey === c.start_time
               return (
-                <div key={c.start_time} className="bg-white rounded-lg shadow p-4" data-candidate={c.start_time}>
+                <div key={c.start_time} className="bg-surface rounded-card shadow-card p-4" data-candidate={c.start_time}>
                   <div className="flex items-start gap-4">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-sm font-medium text-gray-900">
+                        <span className="text-sm font-medium text-ink">
                           {c.start_local.slice(11)}–{c.end_local}
                         </span>
-                        <span className="text-xs text-gray-400">
+                        <span className="text-xs text-ink-faint">
                           {c.dur_min} min · {c.peak_kw} kW peak · {c.energy_kwh} kWh
                         </span>
                         {c.cleanliness !== 'unsure' && (
-                          <span className="text-xs font-medium text-gray-500">{cleanLabel(c.cleanliness)}</span>
+                          <span className="text-xs font-medium text-ink-faint">{cleanLabel(c.cleanliness)}</span>
                         )}
                       </div>
-                      <div className="mt-1 text-xs text-gray-400">
+                      <div className="mt-1 text-xs text-ink-faint">
                         detected as “{APPLIANCE_LABELS[c.suggested_appliance] || c.suggested_appliance}” ({c.confidence >= 0.7 ? 'confident' : 'guess'}, flatness {c.flatness})
                       </div>
                     </div>
@@ -575,11 +575,11 @@ function ReviewTab({
 
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-gray-500 mb-1">Appliance</label>
+                      <label className="block text-xs font-medium text-ink-faint mb-1">Appliance</label>
                       <select
                         value={c.appliance}
                         onChange={(e) => patchCandidate(c.start_time, { appliance: e.target.value })}
-                        className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+                        className="w-full px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
                       >
                         {APPLIANCES.map((a) => (
                           <option key={a} value={a}>{APPLIANCE_LABELS[a] || a}</option>
@@ -588,11 +588,11 @@ function ReviewTab({
                     </div>
                     {c.appliance === 'cosy' && (
                       <div>
-                        <label className="block text-xs font-medium text-gray-500 mb-1">Cosy target temp</label>
+                        <label className="block text-xs font-medium text-ink-faint mb-1">Cosy target temp</label>
                         <select
                           value={c.targetTemp}
                           onChange={(e) => patchCandidate(c.start_time, { targetTemp: e.target.value })}
-                          className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+                          className="w-full px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
                         >
                           <option value="">—</option>
                           <option value="50">50°C</option>
@@ -603,13 +603,13 @@ function ReviewTab({
                   </div>
 
                   {AMBIGUOUS_COOKING.includes(c.appliance) && (
-                    <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                    <p className="mt-2 text-xs text-warn-ink bg-warn-surface border border-warn-border rounded px-2 py-1">
                       An air fryer and a single hob ring look almost identical on the meter — check the Daily tab if you&rsquo;re not sure.
                     </p>
                   )}
 
                   <div className="mt-3">
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Was anything else running?</label>
+                    <label className="block text-xs font-medium text-ink-faint mb-1">Was anything else running?</label>
                     <CleanlinessControl
                       value={c.cleanliness}
                       onChange={(v) => patchCandidate(c.start_time, { cleanliness: v })}
@@ -622,17 +622,17 @@ function ReviewTab({
                       placeholder="Notes (optional) — e.g. tank start 42°C"
                       value={c.notes}
                       onChange={(e) => patchCandidate(c.start_time, { notes: e.target.value })}
-                      className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+                      className="w-full px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
                     />
                   </div>
 
                   {c.splitMode && (
                     <div className="mt-3 flex items-center gap-2">
-                      <label className="text-xs font-medium text-gray-500">Second appliance</label>
+                      <label className="text-xs font-medium text-ink-faint">Second appliance</label>
                       <select
                         value={c.splitAppliance}
                         onChange={(e) => patchCandidate(c.start_time, { splitAppliance: e.target.value })}
-                        className="px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+                        className="px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
                       >
                         <option value="">pick…</option>
                         {APPLIANCES.map((a) => (
@@ -646,7 +646,7 @@ function ReviewTab({
                     <button
                       onClick={() => confirmCandidate(c)}
                       disabled={busy}
-                      className="px-3 py-1.5 rounded-md text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                      className="px-3 py-1.5 rounded-md text-sm font-medium bg-signal text-canvas hover:brightness-95 disabled:opacity-50"
                     >
                       ✓ Confirm
                     </button>
@@ -655,13 +655,13 @@ function ReviewTab({
                         <button
                           onClick={() => splitCandidate(c)}
                           disabled={busy || !c.splitAppliance}
-                          className="px-3 py-1.5 rounded-md text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+                          className="px-3 py-1.5 rounded-md text-sm font-medium bg-signal text-canvas hover:brightness-95 disabled:opacity-50"
                         >
                           Save split
                         </button>
                         <button
                           onClick={() => patchCandidate(c.start_time, { splitMode: false, splitAppliance: '' })}
-                          className="text-sm text-gray-500"
+                          className="bg-surface-2 border border-hairline text-ink hover:border-ink-faint text-sm"
                         >
                           cancel
                         </button>
@@ -670,7 +670,7 @@ function ReviewTab({
                       <button
                         onClick={() => patchCandidate(c.start_time, { splitMode: true })}
                         disabled={busy}
-                        className="px-3 py-1.5 rounded-md text-sm font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 disabled:opacity-50"
+                        className="px-3 py-1.5 rounded-md text-sm font-medium bg-signal/15 text-signal hover:brightness-110 disabled:opacity-50"
                       >
                         ＋ Split
                       </button>
@@ -678,7 +678,7 @@ function ReviewTab({
                     <button
                       onClick={() => rejectCandidate(c)}
                       disabled={busy}
-                      className="px-3 py-1.5 rounded-md text-sm font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50"
+                      className="px-3 py-1.5 rounded-md text-sm font-medium bg-danger-surface border border-danger-border text-danger-ink hover:brightness-110 disabled:opacity-50"
                     >
                       ✗ Not an appliance
                     </button>
@@ -691,8 +691,8 @@ function ReviewTab({
       ))}
 
       {labelled.length > 0 && (
-        <div className="pt-4 border-t border-gray-200">
-          <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Labelled events ({labelled.length})</h3>
+        <div className="pt-4 border-t border-hairline">
+          <h3 className="text-sm font-semibold text-ink-faint uppercase tracking-wide mb-3">Labelled events ({labelled.length})</h3>
           <div className="space-y-2">
             {labelled.slice(0, 50).map((e) => (
               <LabelledEventRow key={e.id} event={e} onDelete={deleteEvent} onSave={patchEvent} />
@@ -745,56 +745,56 @@ function LabelledEventRow({ event, onDelete, onSave }) {
 
   if (!editing) {
     return (
-      <div data-event={event.id} className="flex items-center justify-between bg-white rounded-lg shadow px-4 py-2">
+      <div data-event={event.id} className="flex items-center justify-between bg-surface rounded-card shadow-card px-4 py-2">
         <div className="flex items-center gap-3 text-sm flex-wrap">
-          <span className="font-medium text-gray-800">{APPLIANCE_LABELS[event.appliance] || event.appliance}</span>
-          <span className="text-gray-500">{when}</span>
+          <span className="font-medium text-ink">{APPLIANCE_LABELS[event.appliance] || event.appliance}</span>
+          <span className="text-ink-faint">{when}</span>
           {event.cleanliness && (
             <span className={`text-xs px-2 py-0.5 rounded-full ${
-              event.cleanliness === 'clean' ? 'bg-green-100 text-green-800'
-              : event.cleanliness === 'contaminated' ? 'bg-red-100 text-red-800'
-              : 'bg-amber-100 text-amber-800'
+              event.cleanliness === 'clean' ? 'bg-gridout/15 text-gridout'
+              : event.cleanliness === 'contaminated' ? 'bg-danger-surface text-danger-ink'
+              : 'bg-warn-surface text-warn-ink'
             }`}>{cleanLabel(event.cleanliness)}</span>
           )}
-          {event.target_temp != null && <span className="text-xs text-gray-500">{event.target_temp}°C</span>}
+          {event.target_temp != null && <span className="text-xs text-ink-faint">{event.target_temp}°C</span>}
           <span className={`text-xs px-2 py-0.5 rounded-full ${
-            event.status === 'confirmed' ? 'bg-green-100 text-green-800'
-            : event.status === 'planned' ? 'bg-blue-100 text-blue-800'
-            : 'bg-gray-100 text-gray-600'
+            event.status === 'confirmed' ? 'bg-gridout/15 text-gridout'
+            : event.status === 'planned' ? 'bg-signal/15 text-signal'
+            : 'bg-surface-2 text-ink-muted border border-hairline'
           }`}>{event.status}</span>
         </div>
         <div className="flex items-center gap-3 shrink-0">
-          <button onClick={startEdit} data-edit className="text-sm text-blue-600 hover:text-blue-800">Edit</button>
-          <button onClick={() => onDelete(event.id)} className="text-sm text-red-500 hover:text-red-700">Delete</button>
+          <button onClick={startEdit} data-edit className="text-sm text-ink-muted hover:text-ink">Edit</button>
+          <button onClick={() => onDelete(event.id)} className="text-sm bg-danger-surface border border-danger-border text-danger-ink hover:brightness-110">Delete</button>
         </div>
       </div>
     )
   }
 
   return (
-    <div data-event={event.id} className="bg-white rounded-lg shadow p-4 space-y-3 border border-blue-200">
+    <div data-event={event.id} className="bg-surface rounded-card shadow-card p-4 space-y-3 border border-signal">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-gray-700">{when}</span>
-        <span className="text-xs text-gray-400">editing</span>
+        <span className="text-sm font-medium text-ink-muted">{when}</span>
+        <span className="text-xs text-ink-faint">editing</span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">Appliance</label>
+          <label className="block text-xs font-medium text-ink-faint mb-1">Appliance</label>
           <select
             value={draft.appliance}
             onChange={(e) => setDraft((d) => ({ ...d, appliance: e.target.value }))}
-            className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+            className="w-full px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
           >
             {APPLIANCES.map((a) => <option key={a} value={a}>{APPLIANCE_LABELS[a] || a}</option>)}
           </select>
         </div>
         {draft.appliance === 'cosy' && (
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Cosy target temp</label>
+            <label className="block text-xs font-medium text-ink-faint mb-1">Cosy target temp</label>
             <select
               value={draft.targetTemp}
               onChange={(e) => setDraft((d) => ({ ...d, targetTemp: e.target.value }))}
-              className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+              className="w-full px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
             >
               <option value="">—</option>
               <option value="50">50°C</option>
@@ -804,7 +804,7 @@ function LabelledEventRow({ event, onDelete, onSave }) {
         )}
       </div>
       <div>
-        <label className="block text-xs font-medium text-gray-500 mb-1">Was anything else running?</label>
+        <label className="block text-xs font-medium text-ink-faint mb-1">Was anything else running?</label>
         <CleanlinessControl value={draft.cleanliness} onChange={(v) => setDraft((d) => ({ ...d, cleanliness: v }))} />
       </div>
       <input
@@ -812,20 +812,20 @@ function LabelledEventRow({ event, onDelete, onSave }) {
         placeholder="Notes (optional)"
         value={draft.notes}
         onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
-        className="w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+        className="w-full px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
       />
       <div className="flex items-center gap-2">
         <button
           onClick={save}
           disabled={saving}
           data-save
-          className="px-3 py-1.5 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+          className="px-3 py-1.5 rounded-md text-sm font-medium bg-signal text-canvas hover:brightness-95 disabled:opacity-50"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
-        <button onClick={() => setEditing(false)} className="text-sm text-gray-500">Cancel</button>
+        <button onClick={() => setEditing(false)} className="bg-surface-2 border border-hairline text-ink hover:border-ink-faint text-sm">Cancel</button>
       </div>
-      {err && <p className="text-sm text-red-600">{err}</p>}
+      {err && <p className="text-sm text-danger-ink">{err}</p>}
     </div>
   )
 }
@@ -847,7 +847,7 @@ function DailyTab({ labelled, candidates, inventory, onSave, onError }) {
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-ink-faint">
         Tick what actually ran each day. A day with a single appliance makes every detected window
         that day provably clean — so this is the cheapest way to grow the template data set.
       </p>
@@ -898,26 +898,26 @@ function DayCard({ day, observed, saved, onSave, onError }) {
   const cleanDay = selected.length === 1
 
   return (
-    <div className="bg-white rounded-lg shadow p-4" data-day={day}>
+    <div className="bg-surface rounded-card shadow-card p-4" data-day={day}>
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">{dayLabel(day)}</span>
+          <span className="font-medium text-ink">{dayLabel(day)}</span>
           {cleanDay && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-800">
+            <span className="text-xs px-2 py-0.5 rounded-full bg-gridout/15 text-gridout">
               clean day → {APPLIANCE_LABELS[selected[0]] || selected[0]}
             </span>
           )}
           {selected.length === 0 && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">nothing ran</span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-surface-2 text-ink-muted border border-hairline">nothing ran</span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          {savedFlash && <span className="text-xs text-green-600">saved</span>}
+          {savedFlash && <span className="text-xs text-ok-ink">saved</span>}
           <button
             onClick={save}
             disabled={saving}
             data-save
-            className="px-3 py-1 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            className="px-3 py-1 rounded-md text-sm font-medium bg-signal text-canvas hover:brightness-95 disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save'}
           </button>
@@ -934,7 +934,7 @@ function DayCard({ day, observed, saved, onSave, onError }) {
               data-appliance={a}
               aria-pressed={on}
               className={`px-2.5 py-1 rounded-md text-xs font-medium border ${
-                on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-100'
+                on ? 'bg-signal/15 text-signal border-signal' : 'bg-surface-2 text-ink-muted border-hairline hover:border-ink-faint'
               }`}
             >
               {APPLIANCE_LABELS[a] || a}
@@ -947,7 +947,7 @@ function DayCard({ day, observed, saved, onSave, onError }) {
         placeholder="Notes (optional)"
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
-        className="mt-2 w-full px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+        className="mt-2 w-full px-2 py-1.5 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
       />
     </div>
   )
@@ -956,19 +956,19 @@ function DayCard({ day, observed, saved, onSave, onError }) {
 function LogTab({ log, setLog, logSubmitting, logMessage, submitLog }) {
   const field = (k) => (v) => setLog((prev) => ({ ...prev, [k]: v }))
   return (
-    <div className="bg-white rounded-lg shadow p-6 max-w-xl">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4">Log an event</h3>
-      <p className="text-sm text-gray-500 mb-4">
+    <div className="bg-surface rounded-card shadow-card p-6 max-w-xl">
+      <h3 className="text-lg font-semibold text-ink mb-4">Log an event</h3>
+      <p className="text-sm text-ink-faint mb-4">
         Record something that just happened, or plan ahead (&ldquo;Cosy tonight at 3am&rdquo;). For a
         deliberate isolation test, set cleanliness to <em>clean isolated</em>.
       </p>
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Appliance</label>
+          <label className="block text-sm font-medium text-ink-muted mb-1">Appliance</label>
           <select
             value={log.appliance}
             onChange={(e) => field('appliance')(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+            className="w-full px-3 py-2 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
           >
             {APPLIANCES.map((a) => (
               <option key={a} value={a}>{APPLIANCE_LABELS[a] || a}</option>
@@ -976,32 +976,32 @@ function LogTab({ log, setLog, logSubmitting, logMessage, submitLog }) {
           </select>
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Start (local time)</label>
+          <label className="block text-sm font-medium text-ink-muted mb-1">Start (local time)</label>
           <input
             type="datetime-local"
             value={log.startLocal}
             onChange={(e) => field('startLocal')(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+            className="w-full px-3 py-2 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
           />
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Duration (min, optional)</label>
+            <label className="block text-sm font-medium text-ink-muted mb-1">Duration (min, optional)</label>
             <input
               type="number"
               min="0"
               placeholder="e.g. 35"
               value={log.durationMin}
               onChange={(e) => field('durationMin')(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              className="w-full px-3 py-2 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+            <label className="block text-sm font-medium text-ink-muted mb-1">Status</label>
             <select
               value={log.status}
               onChange={(e) => field('status')(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              className="w-full px-3 py-2 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
             >
               <option value="confirmed">Happened</option>
               <option value="planned">Planned</option>
@@ -1010,7 +1010,7 @@ function LogTab({ log, setLog, logSubmitting, logMessage, submitLog }) {
         </div>
         <div className="grid grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Energy (kWh, optional)</label>
+            <label className="block text-sm font-medium text-ink-muted mb-1">Energy (kWh, optional)</label>
             <input
               type="number"
               step="0.01"
@@ -1018,16 +1018,16 @@ function LogTab({ log, setLog, logSubmitting, logMessage, submitLog }) {
               placeholder="e.g. 1.2"
               value={log.energyKwh}
               onChange={(e) => field('energyKwh')(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              className="w-full px-3 py-2 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
             />
           </div>
           {log.appliance === 'cosy' && (
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Target temp</label>
+              <label className="block text-sm font-medium text-ink-muted mb-1">Target temp</label>
               <select
                 value={log.targetTemp}
                 onChange={(e) => field('targetTemp')(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                className="w-full px-3 py-2 bg-surface-2 border border-hairline text-ink placeholder:text-ink-faint focus:border-signal focus:outline-none rounded-md text-sm"
               >
                 <option value="">—</option>
                 <option value="50">50°C</option>
@@ -1037,18 +1037,18 @@ function LogTab({ log, setLog, logSubmitting, logMessage, submitLog }) {
           )}
         </div>
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Was anything else running?</label>
+          <label className="block text-sm font-medium text-ink-muted mb-1">Was anything else running?</label>
           <CleanlinessControl value={log.cleanliness} onChange={field('cleanliness')} />
         </div>
         <button
           onClick={submitLog}
           disabled={logSubmitting}
-          className="bg-blue-600 text-white py-2 px-5 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50"
+          className="bg-signal text-canvas py-2 px-5 rounded-md font-medium hover:brightness-95 disabled:opacity-50"
         >
           {logSubmitting ? 'Logging…' : 'Log event'}
         </button>
         {logMessage && (
-          <p className={`text-sm ${logMessage.ok ? 'text-green-600' : 'text-red-600'}`}>{logMessage.text}</p>
+          <p className={`text-sm ${logMessage.ok ? 'text-ok-ink' : 'text-danger-ink'}`}>{logMessage.text}</p>
         )}
       </div>
     </div>

@@ -114,30 +114,30 @@ export default function SetupWizard({ onComplete }) {
 
   if (!session) {
     return (
-      <div className="bg-white rounded-lg shadow p-6 max-w-md mx-auto">
-        <p className="text-gray-500">Loading...</p>
+      <div className="bg-surface border border-hairline rounded-card shadow-card p-6 max-w-md mx-auto">
+        <p className="text-ink-muted">Loading...</p>
       </div>
     )
   }
 
-  const inputClass = "w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-  const labelClass = "block text-sm font-medium text-gray-700 mb-1"
+  const inputClass = "w-full px-3 py-2 bg-surface-2 border border-hairline rounded-md text-ink placeholder:text-ink-faint focus:ring-signal focus:border-signal focus:outline-none"
+  const labelClass = "block text-sm font-medium text-ink-muted mb-1"
 
   return (
-    <div className="bg-white rounded-lg shadow p-6 max-w-md mx-auto">
-      <h2 className="text-xl font-bold text-gray-900 mb-2">Set Up Your Energy Optimiser</h2>
-      <p className="text-sm text-gray-500 mb-6">Step {step + 1} of {STEPS.length}: {STEPS[step]}</p>
+    <div className="bg-surface border border-hairline rounded-card shadow-card p-6 max-w-md mx-auto">
+      <h2 className="text-xl font-bold text-ink mb-2">Set Up Your Energy Optimiser</h2>
+      <p className="text-sm text-ink-muted mb-6">Step {step + 1} of {STEPS.length}: {STEPS[step]}</p>
 
       {/* Progress bar */}
       <div className="flex gap-2 mb-6">
         {STEPS.map((s, i) => (
-          <div key={s} className={`h-1 flex-1 rounded ${i <= step ? 'bg-blue-600' : 'bg-gray-200'}`} />
+          <div key={s} className={`h-1 flex-1 rounded ${i <= step ? 'bg-signal' : 'bg-surface-2'}`} />
         ))}
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded p-3 mb-4">
-          <p className="text-red-700 text-sm">{error}</p>
+        <div className="bg-danger-surface border border-danger-border rounded-md p-3 mb-4">
+          <p className="text-danger-ink text-sm">{error}</p>
         </div>
       )}
 
@@ -167,7 +167,7 @@ export default function SetupWizard({ onComplete }) {
             </select>
           </div>
           <button onClick={handleCreateSite} disabled={loading}
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50">
+            className="w-full bg-signal text-canvas py-2 px-4 rounded-md font-medium hover:brightness-95 disabled:opacity-50">
             {loading ? 'Creating...' : 'Next'}
           </button>
         </div>
@@ -211,7 +211,7 @@ export default function SetupWizard({ onComplete }) {
             </div>
           </div>
           <button onClick={handleCreateBattery} disabled={loading}
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50">
+            className="w-full bg-signal text-canvas py-2 px-4 rounded-md font-medium hover:brightness-95 disabled:opacity-50">
             {loading ? 'Saving...' : 'Next'}
           </button>
         </div>
@@ -258,7 +258,7 @@ export default function SetupWizard({ onComplete }) {
             </select>
           </div>
           <button onClick={handleCreateTariff} disabled={loading}
-            className="w-full bg-blue-600 text-white py-2 px-4 rounded-md font-medium hover:bg-blue-700 disabled:opacity-50">
+            className="w-full bg-signal text-canvas py-2 px-4 rounded-md font-medium hover:brightness-95 disabled:opacity-50">
             {loading ? 'Saving...' : 'Next'}
           </button>
         </div>
@@ -267,7 +267,7 @@ export default function SetupWizard({ onComplete }) {
       {/* Step 3: Credentials */}
       {step === 3 && (
         <div className="space-y-4">
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-ink-muted">
             Enter your API keys to enable data fetching. These are stored securely in your account only.
           </p>
           <div>
@@ -289,7 +289,7 @@ export default function SetupWizard({ onComplete }) {
               className={inputClass} placeholder="Your FoxESS API key" />
           </div>
           <button onClick={handleFinish}
-            className="w-full bg-green-600 text-white py-2 px-4 rounded-md font-medium hover:bg-green-700">
+            className="w-full bg-signal text-canvas py-2 px-4 rounded-md font-medium hover:brightness-95">
             Complete Setup
           </button>
         </div>

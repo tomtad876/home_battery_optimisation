@@ -153,9 +153,9 @@ export default function CredentialsSettings() {
         {message && (
           <div style={{
             ...styles.message,
-            backgroundColor: message.type === 'success' ? '#d4edda' : '#f8d7da',
-            color: message.type === 'success' ? '#155724' : '#721c24',
-            borderColor: message.type === 'success' ? '#c3e6cb' : '#f5c6cb',
+            backgroundColor: message.type === 'success' ? 'rgba(52,211,153,0.10)' : 'rgba(248,113,113,0.10)',
+            color: message.type === 'success' ? '#6EE7B7' : '#FCA5A5',
+            borderColor: message.type === 'success' ? 'rgba(52,211,153,0.32)' : 'rgba(248,113,113,0.32)',
           }}>
             {message.text}
           </div>
@@ -242,7 +242,7 @@ export default function CredentialsSettings() {
               />
               <span style={{
                 ...styles.toggleSlider,
-                backgroundColor: autoPushEnabled ? '#2563eb' : '#cbd5e1',
+                backgroundColor: autoPushEnabled ? '#C3F53C' : '#202938',
               }}>
                 <span style={{
                   ...styles.toggleKnob,
@@ -315,7 +315,7 @@ export default function CredentialsSettings() {
 const styles = {
   container: {
     minHeight: '100vh',
-    background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+    background: '#0B0F17',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'flex-start',
@@ -323,48 +323,51 @@ const styles = {
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   },
   card: {
-    background: '#fff',
-    borderRadius: '12px',
+    background: '#121826',
+    border: '1px solid #202938',
+    borderRadius: '14px',
     padding: '40px',
     maxWidth: '520px',
     width: '100%',
-    boxShadow: '0 4px 24px rgba(0,0,0,0.15)',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.35), 0 12px 32px rgba(0,0,0,0.35)',
   },
   title: {
     fontSize: '24px',
     fontWeight: '700',
-    color: '#1e293b',
+    color: '#E7ECF5',
     margin: '0 0 8px 0',
   },
   subtitle: {
     fontSize: '14px',
-    color: '#64748b',
+    color: '#8B95A7',
     margin: '0 0 24px 0',
     lineHeight: '1.5',
   },
   sectionTitle: {
     fontSize: '16px',
     fontWeight: '600',
-    color: '#334155',
+    color: '#E7ECF5',
     margin: '24px 0 12px 0',
     paddingBottom: '6px',
-    borderBottom: '1px solid #e2e8f0',
+    borderBottom: '1px solid #202938',
   },
   label: {
     display: 'block',
     fontSize: '13px',
     fontWeight: '500',
-    color: '#475569',
+    color: '#8B95A7',
     marginBottom: '4px',
     marginTop: '12px',
   },
   input: {
     width: '100%',
     padding: '10px 12px',
-    border: '1px solid #cbd5e1',
+    background: '#171E2A',
+    border: '1px solid #202938',
     borderRadius: '6px',
     fontSize: '14px',
     fontFamily: 'monospace',
+    color: '#E7ECF5',
     boxSizing: 'border-box',
     outline: 'none',
   },
@@ -372,8 +375,8 @@ const styles = {
     marginTop: '24px',
     width: '100%',
     padding: '12px',
-    background: '#2563eb',
-    color: '#fff',
+    background: '#C3F53C',
+    color: '#0B0F17',
     border: 'none',
     borderRadius: '8px',
     fontSize: '16px',
@@ -390,12 +393,12 @@ const styles = {
   hint: {
     marginTop: '20px',
     fontSize: '12px',
-    color: '#94a3b8',
+    color: '#5A6376',
     lineHeight: '1.5',
   },
   loading: {
     textAlign: 'center',
-    color: '#64748b',
+    color: '#8B95A7',
   },
   row: {
     display: 'flex',
@@ -416,7 +419,7 @@ const styles = {
   },
   toggleHint: {
     fontSize: '12px',
-    color: '#94a3b8',
+    color: '#5A6376',
     margin: '4px 0 0 0',
     lineHeight: '1.4',
   },
@@ -447,7 +450,7 @@ const styles = {
   toggleKnob: {
     width: '22px',
     height: '22px',
-    backgroundColor: '#fff',
+    backgroundColor: '#E7ECF5',
     borderRadius: '50%',
     boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
     transition: '0.3s',
