@@ -98,10 +98,21 @@ class TestHealthRoute:
     """Test health check endpoint."""
 
     def test_health_check(self, client):
-        """Test that /health returns ok status."""
+        """Test that /health returns ok status plus the deployed build."""
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        body = response.json()
+        assert body["status"] == "ok"
+        # Build fields let a stale deploy be detected (failed build keeps the old
+        # instance serving behind a healthy /health).
+        assert "commit" in body and "boot_time" in body
+
+    def test_version_endpoint(self, client):
+        """Test that /version reports the running build."""
+        response = client.get("/version")
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body) == {"commit", "branch", "boot_time"}
 
 
 class TestOptimiserRoute:

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 from app.core.auth import verify_token
+from app.core.version import build_info
 from app.core.optimiser import mvp_cost_minimiser
 from app.services.data_provider import (
     get_optimiser_inputs, get_user_site, create_site,
@@ -47,7 +48,18 @@ def _resolve_battery_param(req_value, battery, key):
 
 @router.get("/health")
 def health():
-    return {"status": "ok"}
+    """Liveness plus the deployed build.
+
+    The build fields matter: Render keeps the previous instance serving after a
+    failed build, so a bare 200 does not mean the latest commit is live.
+    """
+    return {"status": "ok", **build_info()}
+
+
+@router.get("/version")
+def version():
+    """Which commit/branch this process is running (and when it booted)."""
+    return build_info()
 
 
 # --- Site management ---
