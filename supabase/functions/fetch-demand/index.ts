@@ -3,8 +3,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
 import { Md5 } from "npm:ts-md5";
 import { decryptProviderConfig } from "../shared/encryption.ts";
 
-// Power variables pulled from FoxESS.
-const POWER_VARIABLES = [
+// Variables pulled from the FoxESS history API (all requested in one call).
+// SoC is stored so efficiency / battery-health can be derived from our own
+// historic_energy_data rather than re-fetching from FoxESS.
+const HISTORY_VARIABLES = [
   "generationPower",
   "feedinPower",
   "loadsPower",
@@ -13,6 +15,7 @@ const POWER_VARIABLES = [
   "batDischargePower",
   "pvPower",
   "meterPower2",
+  "SoC",
 ];
 
 const HISTORY_PATH = "/op/v0/device/history/query";
@@ -67,7 +70,7 @@ async function fetchWindow(
     headers: foxessHeaders(credentials.foxess_api_key!),
     body: JSON.stringify({
       sn: credentials.foxess_device_sn,
-      variables: POWER_VARIABLES,
+      variables: HISTORY_VARIABLES,
       begin,
       end,
     }),
