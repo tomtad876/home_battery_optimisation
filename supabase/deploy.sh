@@ -4,6 +4,33 @@
 
 cd "$(dirname "$0")/.." || exit 1
 
+# --- Guard: make sure the active Supabase credential can actually see THIS project ---
+# This machine has two Supabase accounts. The shared ~/.supabase/access-token
+# belongs to the chef-romaine account (thomas.davis@hotmail.co.uk), which has no
+# access to the battery project, so deploys silently 403 unless the battery
+# account's token is supplied. SUPABASE_ACCESS_TOKEN overrides the stored file.
+PROJECT_REF="$(cat supabase/.temp/project-ref 2>/dev/null || true)"
+if [ -z "$PROJECT_REF" ]; then
+  echo "ERROR: no linked project (supabase/.temp/project-ref missing). Run 'supabase link' first."
+  exit 1
+fi
+if ! supabase projects list 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -q "$PROJECT_REF"; then
+  cat <<EOF
+ERROR: the active Supabase CLI credential cannot see project '$PROJECT_REF'.
+
+This machine has two Supabase accounts. The shared ~/.supabase/access-token
+belongs to the chef-romaine account (thomas.davis@hotmail.co.uk), which has no
+access to the battery project. Supply the battery account's token instead
+(tom.a.davis@bath.edu) — the env var overrides the stored file:
+
+    SUPABASE_ACCESS_TOKEN=sbp_... bash supabase/deploy.sh
+
+Generate a token at: Supabase dashboard (signed in as tom.a.davis@bath.edu)
+                      -> Account -> Access Tokens.
+EOF
+  exit 1
+fi
+
 echo "Deploying Supabase Edge Functions..."
 echo ""
 
