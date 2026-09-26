@@ -35,6 +35,7 @@ export default function SetupWizard({ onComplete }) {
     solcast_api_key: '',
     solcast_system_id: '',
     foxess_api_key: '',
+    foxess_device_sn: '',
   })
 
   const handleCreateSite = async () => {
@@ -63,17 +64,14 @@ export default function SetupWizard({ onComplete }) {
     setLoading(true)
     setError(null)
     try {
+      // Credentials are collected in the final step and saved by handleFinish;
+      // sending them here would just write an empty provider_config.
       await apiFetch('/batteries', {
         method: 'POST',
         accessToken: session?.access_token,
         body: {
           site_id: siteId,
           ...batteryData,
-          provider_config: {
-            solcast_api_key: credData.solcast_api_key,
-            solcast_system_id: credData.solcast_system_id,
-            foxess_api_key: credData.foxess_api_key,
-          },
         },
         retryUnsafe: false, // a timeout may mean the battery was already created
       })
@@ -108,8 +106,24 @@ export default function SetupWizard({ onComplete }) {
     }
   }
 
-  const handleFinish = () => {
-    onComplete(siteId)
+  const handleFinish = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      // Step 3 collects the credentials; until now they were discarded and the
+      // user finished onboarding without any. The endpoint merges, so blank
+      // fields won't wipe anything already saved.
+      await apiFetch('/batteries/me/provider_config', {
+        method: 'PUT',
+        accessToken: session?.access_token,
+        body: credData,
+      })
+      onComplete(siteId)
+    } catch (err) {
+      setError(friendlyError(err, 'Failed to save API credentials'))
+    } finally {
+      setLoading(false)
+    }
   }
 
   if (!session) {
@@ -288,9 +302,18 @@ export default function SetupWizard({ onComplete }) {
               onChange={(e) => setCredData({ ...credData, foxess_api_key: e.target.value })}
               className={inputClass} placeholder="Your FoxESS API key" />
           </div>
-          <button onClick={handleFinish}
-            className="w-full bg-signal text-canvas py-2 px-4 rounded-md font-medium hover:brightness-95">
-            Complete Setup
+          <div>
+            <label className={labelClass}>FoxESS Device Serial Number</label>
+            <input type="text" value={credData.foxess_device_sn}
+              onChange={(e) => setCredData({ ...credData, foxess_device_sn: e.target.value })}
+              className={inputClass} placeholder="e.g. 60xxxxxxxxxx" />
+            <p className="text-xs text-ink-faint mt-1">
+              Required to push schedules to your inverter.
+            </p>
+          </div>
+          <button onClick={handleFinish} disabled={loading}
+            className="w-full bg-signal text-canvas py-2 px-4 rounded-md font-medium hover:brightness-95 disabled:opacity-50">
+            {loading ? 'Saving...' : 'Complete Setup'}
           </button>
         </div>
       )}

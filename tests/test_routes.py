@@ -57,6 +57,43 @@ def client():
     return TestClient(app)
 
 
+class TestProviderConfigRoute:
+    """PUT /batteries/me/provider_config — the endpoint the setup wizard now saves to."""
+
+    def test_merge_keeps_existing_and_ignores_blanks(self, client):
+        """Provided fields are saved, blanks never wipe an existing credential."""
+        with patch('app.api.routes._get_battery_for_user') as mock_battery, \
+             patch('app.api.routes.update_battery_provider_config') as mock_update:
+            mock_battery.return_value = {
+                "id": "test-battery-id",
+                "provider_config": {
+                    "solcast_api_key": "existing-solcast",
+                    "foxess_api_key": "existing-foxess",
+                },
+            }
+            mock_update.return_value = {"id": "test-battery-id"}
+
+            response = client.put("/batteries/me/provider_config", json={
+                "solcast_api_key": "",              # blank must not erase
+                "solcast_system_id": "sys-123",
+                "foxess_device_sn": "SN-999",       # the field the wizard was missing
+            })
+
+            assert response.status_code == 200
+            saved = mock_update.call_args.args[1]
+            assert saved["solcast_api_key"] == "existing-solcast"
+            assert saved["foxess_api_key"] == "existing-foxess"
+            assert saved["solcast_system_id"] == "sys-123"
+            assert saved["foxess_device_sn"] == "SN-999"
+
+    def test_no_battery_returns_404(self, client):
+        with patch('app.api.routes._get_battery_for_user') as mock_battery:
+            from fastapi import HTTPException
+            mock_battery.side_effect = HTTPException(status_code=404, detail="No battery found. Complete setup first.")
+            response = client.put("/batteries/me/provider_config", json={"foxess_api_key": "x"})
+            assert response.status_code == 404
+
+
 class TestHealthRoute:
     """Test health check endpoint."""
 
