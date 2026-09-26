@@ -178,13 +178,13 @@ def put_provider_config(req: UpdateProviderConfigRequest, user: dict = Depends(v
         raise HTTPException(status_code=401, detail="Invalid token: no user sub")
     battery = _get_battery_for_user(user_id)
 
-    # Merge with existing config
+    # Merge with existing config. Blank/None fields mean "leave unchanged" —
+    # filtering after the merge would let an empty form field erase a saved
+    # credential (the wizard and settings both send the fields they know about).
     existing = battery.get("provider_config") or {}
     updates = req.model_dump(exclude_unset=True)
+    updates = {k: v for k, v in updates.items() if v is not None and v != ""}
     merged = {**existing, **updates}
-
-    # Remove keys with empty strings
-    merged = {k: v for k, v in merged.items() if v is not None and v != ""}
 
     try:
         updated = update_battery_provider_config(str(battery["id"]), merged)
