@@ -61,3 +61,7 @@ supabase/.temp/
 
 # Migrations (if using Alembic, keep versions tracked but ignore compiled cache)
 *.pyc
+
+# Local env / Vercel CLI artifacts (never commit secrets)
+.vercel
+.env*.local
