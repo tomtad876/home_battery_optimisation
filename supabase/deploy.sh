@@ -5,9 +5,14 @@
 cd "$(dirname "$0")/.." || exit 1
 
 # --- Resolve which Supabase account's token to use ---
-# This machine's shared ~/.supabase/access-token belongs to the chef-romaine
-# account, so prefer a dedicated battery-account token file (kept outside the
-# repo, chmod 600). An explicit SUPABASE_ACCESS_TOKEN still wins.
+# The Supabase CLI only reads SUPABASE_ACCESS_TOKEN from the environment or the
+# shared ~/.supabase/access-token (which this machine uses for a different
+# account). It does NOT read .env at all, so this script bridges the gap.
+# Order: explicit env var -> repo .env (gitignored) -> ~/.supabase-battery-token.
+if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ] && [ -f ".env" ]; then
+  SUPABASE_ACCESS_TOKEN="$(grep -E '^SUPABASE_ACCESS_TOKEN=' .env | tail -n 1 | cut -d= -f2- | tr -d '\r"')"
+  [ -n "$SUPABASE_ACCESS_TOKEN" ] && export SUPABASE_ACCESS_TOKEN
+fi
 if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ] && [ -f "$HOME/.supabase-battery-token" ]; then
   SUPABASE_ACCESS_TOKEN="$(tr -d '\r\n' < "$HOME/.supabase-battery-token")"
   export SUPABASE_ACCESS_TOKEN
@@ -32,12 +37,14 @@ belongs to the chef-romaine account (thomas.davis@hotmail.co.uk), which has no
 access to the battery project. Supply the battery account's token instead
 (tom.a.davis@bath.edu) — the env var overrides the stored file.
 
-Easiest fix — create the token file once, then rerun this script:
+Easiest fix — add this one line to the repo's .env (gitignored, never committed):
 
-    printf '%s\n' 'sbp_YOUR_BATTERY_TOKEN' > ~/.supabase-battery-token
-    chmod 600 ~/.supabase-battery-token
+    SUPABASE_ACCESS_TOKEN=sbp_YOUR_BATTERY_TOKEN
 
-(Or export SUPABASE_ACCESS_TOKEN=sbp_... for a single command.)
+then rerun:  bash supabase/deploy.sh
+
+(Alternatively export SUPABASE_ACCESS_TOKEN=sbp_... for a single command, or
+write the token to ~/.supabase-battery-token.)
 Generate a token at: Supabase dashboard (signed in as tom.a.davis@bath.edu)
                       -> Account -> Access Tokens.
 EOF
