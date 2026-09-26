@@ -4,6 +4,15 @@
 
 cd "$(dirname "$0")/.." || exit 1
 
+# --- Resolve which Supabase account's token to use ---
+# This machine's shared ~/.supabase/access-token belongs to the chef-romaine
+# account, so prefer a dedicated battery-account token file (kept outside the
+# repo, chmod 600). An explicit SUPABASE_ACCESS_TOKEN still wins.
+if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ] && [ -f "$HOME/.supabase-battery-token" ]; then
+  SUPABASE_ACCESS_TOKEN="$(tr -d '\r\n' < "$HOME/.supabase-battery-token")"
+  export SUPABASE_ACCESS_TOKEN
+fi
+
 # --- Guard: make sure the active Supabase credential can actually see THIS project ---
 # This machine has two Supabase accounts. The shared ~/.supabase/access-token
 # belongs to the chef-romaine account (thomas.davis@hotmail.co.uk), which has no
@@ -21,10 +30,14 @@ ERROR: the active Supabase CLI credential cannot see project '$PROJECT_REF'.
 This machine has two Supabase accounts. The shared ~/.supabase/access-token
 belongs to the chef-romaine account (thomas.davis@hotmail.co.uk), which has no
 access to the battery project. Supply the battery account's token instead
-(tom.a.davis@bath.edu) — the env var overrides the stored file:
+(tom.a.davis@bath.edu) — the env var overrides the stored file.
 
-    SUPABASE_ACCESS_TOKEN=sbp_... bash supabase/deploy.sh
+Easiest fix — create the token file once, then rerun this script:
 
+    printf '%s\n' 'sbp_YOUR_BATTERY_TOKEN' > ~/.supabase-battery-token
+    chmod 600 ~/.supabase-battery-token
+
+(Or export SUPABASE_ACCESS_TOKEN=sbp_... for a single command.)
 Generate a token at: Supabase dashboard (signed in as tom.a.davis@bath.edu)
                       -> Account -> Access Tokens.
 EOF
