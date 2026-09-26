@@ -18,3 +18,7 @@ pytest tests/test_routes.py -v
 
 # Run a specific test
 pytest tests/test_optimiser.py::TestOptimiser::test_optimiser_respects_soc_bounds -v
+
+# Edge-function tests (classifier parity between the Python and TS classifiers).
+# Needs deno: `npm install -g deno`.
+deno test --allow-read supabase/functions/shared/classify-schedule_test.ts

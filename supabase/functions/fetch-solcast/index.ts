@@ -93,7 +93,7 @@ serve(async (req: Request) => {
           console.log(`fetch-solcast: upserted ${intervals.length} intervals for site ${battery.site_id}`);
         }
       } catch (e) {
-        errors.push(`Error fetching for site ${battery.site_id}: ${e.message}`);
+        errors.push(`Error fetching for site ${battery.site_id}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -107,7 +107,7 @@ serve(async (req: Request) => {
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

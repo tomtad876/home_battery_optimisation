@@ -24,11 +24,11 @@ function bytesToBase64(bytes: Uint8Array): string {
 }
 
 async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", raw, { name: "AES-CBC" }, false, ["encrypt", "decrypt"]);
+  return crypto.subtle.importKey("raw", raw as BufferSource, { name: "AES-CBC" }, false, ["encrypt", "decrypt"]);
 }
 
 async function importHmacKey(raw: Uint8Array): Promise<CryptoKey> {
-  return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+  return crypto.subtle.importKey("raw", raw as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }
 
 function deriveKeyMaterial(key: Uint8Array): { signingKey: Uint8Array; encryptionKey: Uint8Array } {
@@ -94,7 +94,7 @@ export async function fernetEncrypt(plaintext: string, keyBase64: string): Promi
   // HMAC over version + timestamp + iv + ciphertext
   const hmacPayload = concat(version, timestamp, iv, ciphertext);
   const hmacKey = await importHmacKey(signingKey);
-  const hmac = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, hmacPayload));
+  const hmac = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, hmacPayload as BufferSource));
 
   return bytesToBase64(concat(version, timestamp, iv, ciphertext, hmac));
 }

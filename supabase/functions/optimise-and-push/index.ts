@@ -2,8 +2,8 @@ import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
 import { Md5 } from "npm:ts-md5";
 import { decryptProviderConfig } from "../shared/encryption.ts";
-import { classifySchedule, OptimiserSlot, ClassifierConfig } from "../shared/classify-schedule.ts";
-import { getDeviceScheduleInfo, getDeviceRemainMode, splitGroupsAtMidnight, buildRemainModeGroup, sendScheduleToInverter } from "../shared/foxess-schedule.ts";
+import { prepareScheduleGroups, OptimiserSlot, ClassifierConfig } from "../shared/classify-schedule.ts";
+import { getDeviceScheduleInfo, getDeviceRemainMode, sendScheduleToInverter } from "../shared/foxess-schedule.ts";
 
 const FOXESS_BASE_URL = "https://www.foxesscloud.com";
 
@@ -158,39 +158,42 @@ serve(async (req: Request) => {
           continue;
         }
 
-        // 4. Classify into FoxESS groups
+        // 4. Classify into FoxESS groups. maxGroupCount includes the remain-mode
+        // group, and prepareScheduleGroups guarantees the pushed list fits it
+        // (classify → drop remain → split midnight → merge to maxGroups-1 →
+        // append remain) — the same pipeline the manual Python path uses.
+        const maxGroups = deviceInfo.maxGroupCount || 8;
         const classifierConfig: ClassifierConfig = {
           threshold: 0.05,
           capacityKwh: battery.capacity_kwh,
           minSocPct: battery.min_soc_pct,
           maxSocPct: battery.max_soc_pct,
           ratedPowerW: battery.max_charge_kw * 1000,
-          maxGroups: deviceInfo.maxGroupCount,
+          maxGroups,
           supportedModes: ["SelfUse", "ForceCharge", "ForceDischarge", "Feedin"],
         };
 
-        const groups = classifySchedule(schedule, classifierConfig, now);
-
-        // Drop groups matching the device's remain (default) mode — those
-        // instructions are redundant since the inverter already falls back to
-        // that mode in unscheduled gaps. Fall back to SelfUse (FoxESS default)
-        // if the device can't report it — e.g. right after a push that wiped
-        // the remain-mode group.
+        // Fall back to SelfUse (FoxESS default) if the device can't report its
+        // remain mode — e.g. right after a push that wiped the remain-mode group.
         const remainMode = (await getDeviceRemainMode(foxessKey, deviceSn)) || "SelfUse";
-        let finalGroups = groups.filter((g: any) => g.workMode !== remainMode);
+        const finalGroups = prepareScheduleGroups(schedule, classifierConfig, now, remainMode);
 
-        // Split any group that spans midnight (FoxESS rejects cross-midnight periods)
-        finalGroups = splitGroupsAtMidnight(finalGroups);
+        // 5. Push to inverter. Capture failures instead of throwing past the
+        // audit write, so every run is logged and the response status reflects it.
+        let pushed = false;
+        let providerResponse: unknown = null;
+        let pushError: string | null = null;
+        try {
+          const result = await sendScheduleToInverter(foxessKey, deviceSn, finalGroups as any[]);
+          pushed = true;
+          providerResponse = result.providerResponse;
+        } catch (e) {
+          pushError = e instanceof Error ? e.message : String(e);
+          errors.push(`Battery ${battery.id}: push failed: ${pushError}`);
+        }
 
-        // Always include the device's remain-mode group. The push API replaces
-        // the whole schedule — pushing without it wipes the remain mode and
-        // breaks remain-mode detection on the next push.
-        finalGroups.push(buildRemainModeGroup(remainMode, battery.min_soc_pct));
-
-        // 5. Push to inverter
-        const result = await sendScheduleToInverter(foxessKey, deviceSn, finalGroups as any[]);
-
-        // 6. Log to schedules table
+        // 6. Log to schedules table — audit the groups actually sent, not the
+        // pre-merge/pre-split classifier output.
         const { data: lastRun } = await client
           .from("optimisation_runs")
           .select("id")
@@ -201,19 +204,21 @@ serve(async (req: Request) => {
 
         await client.from("schedules").insert({
           optimisation_run_id: lastRun?.id || null,
-          status: result.pushed ? "sent" : "failed",
+          status: pushed ? "sent" : "failed",
           pushed_at: now.toISOString(),
-          foxess_groups: groups,
+          foxess_groups: finalGroups,
           trigger_source: "cron",
           soc_at_push: socPct,
-          provider_response: result.providerResponse,
-          error_message: result.pushed ? null : "Push failed",
+          provider_response: providerResponse,
+          error_message: pushError,
         });
 
-        processed++;
-        console.log(`optimise-and-push: battery ${battery.id} — pushed ${groups.length} groups, SOC ${socPct}%`);
+        if (pushed) {
+          processed++;
+          console.log(`optimise-and-push: battery ${battery.id} — pushed ${finalGroups.length} groups, SOC ${socPct}%`);
+        }
       } catch (e) {
-        errors.push(`Battery ${battery.id}: ${e.message}`);
+        errors.push(`Battery ${battery.id}: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
@@ -224,10 +229,10 @@ serve(async (req: Request) => {
         total: batteries.length,
         errors: errors.length > 0 ? errors : undefined,
       }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
+      { status: errors.length === 0 ? 200 : 500, headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

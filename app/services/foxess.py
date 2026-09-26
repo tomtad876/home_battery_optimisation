@@ -443,6 +443,66 @@ def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
     return out
 
 
+def post_process_groups(
+    groups: list[dict],
+    *,
+    remain_mode: str = FOXESS_MODE_SELF_USE,
+    min_soc_pct: float = 20.0,
+    max_groups: int = 8,
+) -> list[dict]:
+    """Apply the push pipeline to classified groups (mirrors classify_and_push).
+
+    Drop groups matching the device's remain mode (redundant — the inverter
+    already falls back to it in unscheduled gaps), split cross-midnight groups,
+    merge down to ``max_groups - 1`` (leaving room for the remain group), then
+    append the remain group. Deliberately pure (no API calls) so it can be
+    parity-tested against the TypeScript classifier.
+    """
+    groups = [g for g in groups if g.get("workMode") != remain_mode]
+    groups = split_groups_at_midnight(groups)
+    room = max(1, max_groups - 1)
+    if len(groups) > room:
+        groups = _merge_groups(groups, room)
+    groups = groups + [build_remain_mode_group(remain_mode, min_soc_pct)]
+    return groups
+
+
+def prepare_schedule_groups(
+    result_df: pd.DataFrame,
+    *,
+    threshold: float = 0.05,
+    from_time: datetime | None = None,
+    max_hours: float | None = 24.0,
+    min_soc_pct: float = 10.0,
+    max_soc_pct: float = 100.0,
+    rated_power_w: float = 3000.0,
+    local_tz: str = "Europe/London",
+    remain_mode: str = FOXESS_MODE_SELF_USE,
+    max_groups: int = 8,
+) -> list[dict]:
+    """Classify + post-process into the final group list that gets pushed.
+
+    Pure end-to-end pipeline (no API calls); the TypeScript
+    ``prepareScheduleGroups`` must produce identical output for identical input.
+    """
+    groups = classify_optimiser_output(
+        result_df,
+        threshold=threshold,
+        from_time=from_time,
+        max_hours=max_hours,
+        min_soc_pct=min_soc_pct,
+        max_soc_pct=max_soc_pct,
+        rated_power_w=rated_power_w,
+        local_tz=local_tz,
+    )
+    return post_process_groups(
+        groups,
+        remain_mode=remain_mode,
+        min_soc_pct=min_soc_pct,
+        max_groups=max_groups,
+    )
+
+
 def _round_soc_up(v: float) -> int:
     """Round a SOC % up to the nearest 5% (capped 0-100)."""
     import math
@@ -539,24 +599,19 @@ def classify_and_push(
         if not groups:
             return {"pushed": False, "groups_sent": 0, "provider_response": None, "error": "No schedule groups to push"}
 
-        # Drop groups matching the device's remain mode (redundant — the
-        # inverter already defaults to that mode in unscheduled gaps).
-        # Fall back to SelfUse (FoxESS default) if the device can't report it —
-        # e.g. right after a push that wiped the remain-mode group.
+        # Fall back to SelfUse (FoxESS default) if the device can't report its
+        # remain mode — e.g. right after a push that wiped the remain-mode group.
         remain_mode = get_device_remain_mode(api_key, device_sn) or FOXESS_MODE_SELF_USE
-        groups = [g for g in groups if g.get("workMode") != remain_mode]
 
-        # Split any group that spans midnight (FoxESS rejects cross-midnight periods)
-        groups = split_groups_at_midnight(groups)
-
-        # Merge if over device limit (leave room for the remain-mode group)
-        if len(groups) > max_groups - 1:
-            groups = _merge_groups(groups, max_groups - 1)
-
-        # Always include the device's remain-mode group. set_schedule replaces
-        # the whole schedule — pushing without it wipes the remain mode and
-        # breaks remain-mode detection on the next push.
-        groups = groups + [build_remain_mode_group(remain_mode or FOXESS_MODE_SELF_USE, min_soc_pct)]
+        # Drop remain-matching groups, split at midnight, merge to leave room,
+        # and append the remain-mode group. The same pure pipeline the parity
+        # test exercises (must match the TS prepareScheduleGroups).
+        groups = post_process_groups(
+            groups,
+            remain_mode=remain_mode,
+            min_soc_pct=min_soc_pct,
+            max_groups=max_groups,
+        )
 
         # Push to device (retries transient 41203 "Operation timed out" etc.)
         result = push_schedule_to_device(api_key, device_sn, groups)
@@ -600,14 +655,21 @@ def _merge_groups(groups: list[dict], max_groups: int) -> list[dict]:
                 best_score = score
                 best_idx = i
 
-        # Merge into larger neighbour
+        # Merge into a neighbour (prefer the one before, else after)
         target = best_idx - 1 if best_idx > 0 else best_idx + 1
         if target < 0 or target >= len(merged):
             break
 
-        # Extend target's end time to cover merged group
-        merged[target]["endHour"] = merged[best_idx]["endHour"]
-        merged[target]["endMinute"] = merged[best_idx]["endMinute"]
+        # Direction-aware: merging group `best_idx` into `target` must WIDEN
+        # target. The old code always overwrote target's end, so merging index 0
+        # into index 1 set its end to the (earlier) candidate end → end before
+        # start, a corrupt group.
+        if target < best_idx:
+            merged[target]["endHour"] = merged[best_idx]["endHour"]
+            merged[target]["endMinute"] = merged[best_idx]["endMinute"]
+        else:
+            merged[target]["startHour"] = merged[best_idx]["startHour"]
+            merged[target]["startMinute"] = merged[best_idx]["startMinute"]
         merged.pop(best_idx)
 
     return merged
