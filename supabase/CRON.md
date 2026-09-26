@@ -14,10 +14,15 @@ BST = UTC+1 (late March → late October).
 | `schedule_agile_prices` | 3 | `30 11,15,17,18 * * *` | 12:30 / **16:30** / 18:30 / 19:30 | `fetch-agile-prices` |
 | `schedule_historic_energy_data` | 8 | `*/15 * * * *` | every 15 min | `fetch-demand` |
 | `schedule_heat_pump` | 9 | `*/15 * * * *` | every 15 min | `fetch-heatpump` |
+| `keep_backend_warm` | — | `*/10 5-22 * * *` | 06:20–22:55 (London guard) | Render `/health` |
 
 Job ids are assigned by `cron.schedule` and are only indicative here. There is
 deliberately **no** separate afternoon job — the 16:30 local run lives on the
 existing `schedule_agile_prices` job.
+
+`keep_backend_warm` is the exception to "all schedules are UTC": its cron
+expression is UTC but the window is enforced by a **Europe/London guard inside
+the command**, so it follows BST/GMT. See below.
 
 ## Why the 16:30 local Agile run (added 2026-09-23)
 
@@ -42,6 +47,28 @@ BST is in force. When BST ends (late Oct) it becomes 15:30 local unless the
 schedule is shifted by an hour.
 
 Apply / revert: [`cron/agile_fetch_schedule.sql`](cron/agile_fetch_schedule.sql).
+
+## Why `keep_backend_warm` (added 2026-09-26)
+
+Render's free tier spins a web service down after 15 minutes with no inbound
+traffic; the next request pays a ~30-60s cold start. A ping every 10 minutes
+keeps the backend resident through the hours the app is actually used, so the
+dashboard and an ad-hoc re-run are always instant. It costs no money and no
+Edge Function — just a direct `pg_net` GET to the unauthenticated `/health`.
+
+**Waking hours, DST-correct.** The job fires every 10 minutes between 05:00 and
+22:59 UTC but the command only pings when local time is **06:20–22:55**
+(`now() at time zone 'Europe/London'`). This is because pg_cron 1.6.4 has no
+per-job timezone (`cron.schedule_in_timezone` doesn't exist here) and changing
+the global `cron.timezone` would shift every other job. The guard makes the
+window follow BST/GMT automatically. The first ping lands ~10 min before 06:30
+(so it's warm *by* then) and the last holds it warm until ~23:05.
+
+**Instance hours:** with sleeping enforced overnight this uses ~18h/day
+(~540h/month) of Render's 750 free instance hours — comfortably inside the cap.
+Pinging 24/7 would also fit (~720h) but leave no headroom.
+
+Apply / revert: [`cron/keep_backend_warm.sql`](cron/keep_backend_warm.sql).
 
 ## Gotchas
 
