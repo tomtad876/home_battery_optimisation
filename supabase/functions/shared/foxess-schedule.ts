@@ -6,15 +6,7 @@ import { Md5 } from "npm:ts-md5";
 
 const FOXESS_BASE_URL = "https://www.foxesscloud.com";
 
-interface FoxESSHeaders {
-  "Content-Type": string;
-  signature: string;
-  token: string;
-  timestamp: string;
-  lang: string;
-}
-
-function signHeaders(path: string, apiKey: string, timestamp: number): FoxESSHeaders {
+function signHeaders(path: string, apiKey: string, timestamp: number): Record<string, string> {
   const signature = Md5.hashStr(`${path}\\r\\n${apiKey}\\r\\n${timestamp.toString()}`);
   return {
     "Content-Type": "application/json",
@@ -117,10 +109,10 @@ export async function getDeviceRemainMode(
   if (!resp.ok || resp.data?.result == null) return null;
   const groups = resp.data.result.groups || [];
   for (const g of groups) {
-    const isRemain =
-      g.startHour === 0 && g.startMinute === 0 &&
-      g.endHour === 23 && g.endMinute === 59;
-    if (isRemain) return g.workMode;
+    // Use the device's own flag. Inferring from a 00:00-23:59 span is wrong:
+    // the 24h cap + midnight split can produce a genuine full-day instruction
+    // group, which would then be misread as the remain mode and dropped.
+    if (g.isRemainMode === true) return g.workMode;
   }
   return null;
 }
@@ -188,8 +180,9 @@ export async function disableSchedule(
 }
 
 // Transient FoxESS errnos indicating cloud/device contention (safe to retry):
-// 41203 = Operation timed out, 40400 = requests too frequent, 44099 = Busy.
-const TRANSIENT_ERRNOS = new Set([41203, 40400, 44099]);
+// 41203 = Operation timed out, 40400 = requests too frequent,
+// 40401 = login too frequent, 44099 = Busy.
+const TRANSIENT_ERRNOS = new Set([41203, 40400, 40401, 44099]);
 const PUSH_MAX_RETRIES = 3;
 const PUSH_RETRY_DELAY_MS = 2000;
 
