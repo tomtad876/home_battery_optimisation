@@ -2,6 +2,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from app.api.routes import router
+from app.core.config import settings
+
+# Error monitoring. Initialised before the app so the FastAPI integration wraps
+# it. No-ops when SENTRY_DSN is unset, so local dev and tests never need a DSN.
+# send_default_pii is off deliberately: this app handles personal/financial data
+# and error payloads must not carry user emails or tokens.
+if settings.SENTRY_DSN:
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=settings.SENTRY_DSN,
+            environment=settings.SENTRY_ENVIRONMENT,
+            traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+            send_default_pii=False,
+        )
+    except ImportError:
+        print("SENTRY_DSN is set but sentry-sdk is not installed — monitoring disabled")
 
 app = FastAPI(title="Energy Optimiser API")
 

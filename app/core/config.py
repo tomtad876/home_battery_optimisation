@@ -25,6 +25,13 @@ def normalise_db_url(url: str | None) -> str | None:
 
 class Settings:
     DATABASE_URL: str = normalise_db_url(os.getenv("DATABASE_URL"))
+    # Error monitoring. Optional: when SENTRY_DSN is unset the SDK is never
+    # initialised, so local dev and tests are unaffected. Environment defaults
+    # to "production" so Render errors are distinguishable from local ones.
+    SENTRY_DSN: str | None = os.getenv("SENTRY_DSN")
+    SENTRY_ENVIRONMENT: str = os.getenv("SENTRY_ENVIRONMENT", "production")
+    # Trace sampling; 0 by default (errors only). Raising it adds request spans.
+    SENTRY_TRACES_SAMPLE_RATE: float = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
 
 
 settings = Settings()

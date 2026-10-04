@@ -15,4 +15,5 @@ cryptography
 pytest
 pytest-asyncio
 matplotlib
+sentry-sdk[fastapi]
 
