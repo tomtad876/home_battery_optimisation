@@ -14,6 +14,7 @@ BST = UTC+1 (late March → late October).
 | `schedule_agile_prices` | 3 | `30 11,15,17,18 * * *` | 12:30 / **16:30** / 18:30 / 19:30 | `fetch-agile-prices` |
 | `schedule_historic_energy_data` | 8 | `*/15 * * * *` | every 15 min | `fetch-demand` |
 | `schedule_heat_pump` | 9 | `*/15 * * * *` | every 15 min | `fetch-heatpump` |
+| `schedule_optimise_and_push` | — | `*/30 * * * *` (06:30–22:50 London guard) | every 30 min, waking hours | `optimise-and-push` |
 | `keep_backend_warm` | — | `*/10 5-22 * * *` | 06:20–22:55 (London guard) | Render `/health` |
 
 Job ids are assigned by `cron.schedule` and are only indicative here. There is
@@ -69,6 +70,35 @@ window follow BST/GMT automatically. The first ping lands ~10 min before 06:30
 Pinging 24/7 would also fit (~720h) but leave no headroom.
 
 Apply / revert: [`cron/keep_backend_warm.sql`](cron/keep_backend_warm.sql).
+
+## Why `schedule_optimise_and_push` (added 2026-10-04)
+
+Auto-push runs the whole classify-and-push pipeline every 30 minutes so the
+inverter always holds a current, correctly-sized schedule without anyone
+pressing a button. Three deliberate choices:
+
+- **Waking-hours guard (06:30–22:50 London).** The function calls the Render
+  backend's `/internal/optimise`, so it must not fire while the backend is
+  asleep (a cold start would blow the function's fetch budget). The window
+  matches `keep_backend_warm`. The ~22:30 run carries published day-ahead prices
+  and covers overnight charging, so there is no 3am wake-up.
+- **Published-prices-only gate.** The optimiser plans a 48h horizon whose tail
+  is backfilled with a 7-day average and flagged `is_synthetic`. The function
+  drops the synthetic tail before classifying, so the inverter is never
+  committed to a "typical day". Before ~16:30 local the window is capped to the
+  last published slot; after the Agile refresh it extends to 24h.
+- **Shared-secret auth.** Deployed `--no-verify-jwt`, the function requires an
+  `x-cron-secret` header equal to its `CRON_SECRET` env var and fails closed if
+  unset. See the security-debt note in
+  [`cron/optimise_and_push.sql`](cron/optimise_and_push.sql).
+
+**Alerting.** The function pings `HEALTHCHECK_PING_URL` on every run (success) or
+`…/fail` on any error, and optionally POSTs `ALERT_WEBHOOK_URL` on failure. The
+heartbeat is the important half: a *missing* ping (cron disabled, function
+crashing early) also alerts, which is the 2026-09-13 silent-failure mode a
+failure-only webhook would miss. Runs are also audited in the `schedules` table.
+
+Apply / revert: [`cron/optimise_and_push.sql`](cron/optimise_and_push.sql).
 
 ## Gotchas
 

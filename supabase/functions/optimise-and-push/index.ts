@@ -82,8 +82,56 @@ async function callBackendOptimise(
   return data?.schedule || null;
 }
 
+async function notify(summary: { success: boolean; processed: number; total: number; errors: string[] }) {
+  // Heartbeat / dead-man's switch. Ping on EVERY run so a *missing* ping (cron
+  // disabled, function crashing before this point) also alerts — that is the
+  // 2026-09-13 silent-failure mode a failure-only alert would miss.
+  // healthchecks.io convention: success = the ping URL, failure = URL + /fail.
+  const hc = Deno.env.get("HEALTHCHECK_PING_URL");
+  if (hc) {
+    try {
+      const url = summary.success ? hc : `${hc.replace(/\/+$/, "")}/fail`;
+      await fetch(url, {
+        method: "POST",
+        body: summary.success ? "ok" : (summary.errors.join("; ") || "failed"),
+      });
+    } catch (e) {
+      console.error("optimise-and-push: heartbeat ping failed", e);
+    }
+  }
+  // Optional generic webhook (Slack/Discord/ntfy). Failures only — not a noisy
+  // per-run channel.
+  const webhook = Deno.env.get("ALERT_WEBHOOK_URL");
+  if (webhook && !summary.success) {
+    try {
+      await fetch(webhook, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: `Battery auto-push: ${summary.processed}/${summary.total} pushed. ${summary.errors.join("; ")}`,
+        }),
+      });
+    } catch (e) {
+      console.error("optimise-and-push: alert webhook failed", e);
+    }
+  }
+}
+
 serve(async (req: Request) => {
   console.log("optimise-and-push: invoked");
+
+  // Shared-secret gate. The function deploys with --no-verify-jwt because
+  // pg_cron cannot present a JWT the gateway will verify, so this header is the
+  // real authentication (the function can push to real inverters). Fail closed:
+  // no secret configured means refuse everything.
+  const cronSecret = Deno.env.get("CRON_SECRET");
+  if (!cronSecret || req.headers.get("x-cron-secret") !== cronSecret) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   try {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     const encryptionKey = Deno.env.get("PROVIDER_CONFIG_ENCRYPTION_KEY");
@@ -101,6 +149,7 @@ serve(async (req: Request) => {
 
     if (battErr) throw new Error(`Failed to fetch batteries: ${battErr.message}`);
     if (!batteries || batteries.length === 0) {
+      await notify({ success: true, processed: 0, total: 0, errors: [] });
       return new Response(
         JSON.stringify({ success: true, message: "No batteries with auto-push enabled", processed: 0 }),
         { status: 200, headers: { "Content-Type": "application/json" } }
@@ -158,6 +207,28 @@ serve(async (req: Request) => {
           continue;
         }
 
+        // Refuse to push instructions built on backfilled prices. The optimiser
+        // plans a 48h horizon whose tail is filled with a 7-day time-of-day
+        // average and flagged is_synthetic; committing the inverter to a
+        // "typical day" before the day-ahead prices publish is worse than
+        // waiting for the next run (the 16:30 local Agile refresh). Published
+        // prices are always a contiguous prefix, so dropping the synthetic tail
+        // keeps the slots contiguous.
+        const realSchedule = (schedule as OptimiserSlot[]).filter((s) => !s.is_synthetic);
+        if (realSchedule.length < 2) {
+          const msg = `Battery ${battery.id}: no published-price slots in the horizon — skipping synthetic plan`;
+          errors.push(msg);
+          await client.from("schedules").insert({
+            status: "failed",
+            pushed_at: now.toISOString(),
+            trigger_source: "cron",
+            soc_at_push: socPct,
+            error_message: msg,
+            foxess_groups: [],
+          });
+          continue;
+        }
+
         // 4. Classify into FoxESS groups. maxGroupCount includes the remain-mode
         // group, and prepareScheduleGroups guarantees the pushed list fits it
         // (classify → drop remain → split midnight → merge to maxGroups-1 →
@@ -176,7 +247,7 @@ serve(async (req: Request) => {
         // Fall back to SelfUse (FoxESS default) if the device can't report its
         // remain mode — e.g. right after a push that wiped the remain-mode group.
         const remainMode = (await getDeviceRemainMode(foxessKey, deviceSn)) || "SelfUse";
-        const finalGroups = prepareScheduleGroups(schedule, classifierConfig, now, remainMode);
+        const finalGroups = prepareScheduleGroups(realSchedule, classifierConfig, now, remainMode);
 
         // 5. Push to inverter. Capture failures instead of throwing past the
         // audit write, so every run is logged and the response status reflects it.
@@ -222,6 +293,8 @@ serve(async (req: Request) => {
       }
     }
 
+    await notify({ success: errors.length === 0, processed, total: batteries.length, errors });
+
     return new Response(
       JSON.stringify({
         success: errors.length === 0,
@@ -232,7 +305,9 @@ serve(async (req: Request) => {
       { status: errors.length === 0 ? 200 : 500, headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), {
+    const msg = error instanceof Error ? error.message : String(error);
+    await notify({ success: false, processed: 0, total: 0, errors: [msg] });
+    return new Response(JSON.stringify({ error: msg }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });

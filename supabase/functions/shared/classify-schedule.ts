@@ -21,6 +21,8 @@ export interface OptimiserSlot {
   demand?: number;
   pv_estimate?: number;
   price: number;
+  /** True where the price is a backfilled 7-day average, not a published rate. */
+  is_synthetic?: boolean;
 }
 
 export interface FoxESSGroup {
