@@ -11,7 +11,7 @@ from app.core.optimiser import mvp_cost_minimiser
 from app.services.data_provider import (
     get_optimiser_inputs, get_user_site, create_site,
     create_battery, create_tariff, get_user_battery, update_battery_provider_config,
-    update_battery_config, get_battery_realtime
+    update_battery_config, get_battery_realtime, update_site_holiday
 )
 from app.services.foxess import classify_optimiser_output, _merge_groups, classify_and_push
 from app.services.event_detector import detect_events
@@ -93,6 +93,33 @@ def post_site(req: CreateSiteRequest, user: dict = Depends(verify_token)):
 
     site = create_site(user_id, req.name, req.timezone)
     return {"site": site}
+
+
+class UpdateSiteRequest(BaseModel):
+    holiday_mode: bool | None = None
+    holiday_until: datetime | None = None
+
+
+@router.patch("/sites/me")
+def patch_my_site(req: UpdateSiteRequest, user: dict = Depends(verify_token)):
+    """Update household settings on the authenticated user's site (holiday mode).
+
+    Uses exclude_unset so an explicit `holiday_until: null` clears the date
+    while omitting the field leaves it unchanged.
+    """
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found. Complete setup first.")
+    updates = req.model_dump(exclude_unset=True)
+    if not updates:
+        return {"site": site}
+    updated = update_site_holiday(str(site["id"]), updates)
+    if not updated:
+        raise HTTPException(status_code=400, detail="No holiday settings to update")
+    return {"site": updated}
 
 
 # --- Battery config ---

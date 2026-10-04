@@ -275,6 +275,9 @@ export default function Home() {
     return Number(v).toFixed(decimals)
   }
 
+  const holidayActive = !!site?.holiday_mode
+    && (!site?.holiday_until || new Date(site.holiday_until) > new Date())
+
   return (
     <>
       <Head>
@@ -338,6 +341,19 @@ export default function Home() {
                   <button onClick={handleLogout} className="text-sm text-danger-ink hover:brightness-110">Sign out</button>
                 </div>
               </div>
+
+              {holidayActive && (
+                <div className="bg-signal/10 border border-signal/40 rounded-card px-4 py-3 mb-6">
+                  <p className="text-ink text-sm">
+                    <span className="font-semibold">Holiday mode is on.</span>{' '}
+                    Demand is forecast as baseload (plus anything you schedule on the Events page)
+                    {site.holiday_until
+                      ? ` until ${new Date(site.holiday_until).toLocaleDateString('en-GB', { timeZone: 'Europe/London' })}`
+                      : ''}
+                    . <a href="/settings" className="underline hover:brightness-110">Change</a>
+                  </p>
+                </div>
+              )}
 
               {/* Run controls. Battery config (capacity, power limits, SOC bounds)
                   lives in Settings; the backend reads it, so there is nothing to

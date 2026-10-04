@@ -21,6 +21,8 @@ export default function CredentialsSettings() {
   const [minSocPct, setMinSocPct] = useState('20');
   const [maxSocPct, setMaxSocPct] = useState('100');
   const [autoPushEnabled, setAutoPushEnabled] = useState(false);
+  const [holidayMode, setHolidayMode] = useState(false);
+  const [holidayUntil, setHolidayUntil] = useState('');
 
   useEffect(() => {
     loadCredentials();
@@ -33,6 +35,19 @@ export default function CredentialsSettings() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
+      // Holiday settings live on the site, not the battery.
+      let site = null;
+      try {
+        const siteData = await apiFetch('/sites/me', { accessToken: session.access_token });
+        site = siteData?.site ?? null;
+      } catch (err) {
+        if (err?.status !== 404) throw err;
+      }
+      if (site) {
+        setHolidayMode(site.holiday_mode ?? false);
+        setHolidayUntil(site.holiday_until ? String(site.holiday_until).slice(0, 10) : '');
+      }
+
       let battery = null;
       try {
         const data = await apiFetch('/batteries/me', { accessToken: session.access_token });
@@ -44,14 +59,14 @@ export default function CredentialsSettings() {
 
       // If no battery exists, create a default one
       if (!battery) {
-        const siteData = await apiFetch('/sites/me', { accessToken: session.access_token });
+        if (!site) throw new Error('No site found. Complete setup first.');
         // Not safe to retry: a repeated create could add a second battery
         const created = await apiFetch('/batteries', {
           method: 'POST',
           accessToken: session.access_token,
           retryUnsafe: false,
           body: {
-            site_id: siteData.site.id,
+            site_id: site.id,
             capacity_kwh: 5.0,
             max_charge_kw: 3.0,
             max_discharge_kw: 3.0,
@@ -111,6 +126,19 @@ export default function CredentialsSettings() {
           min_soc_pct: parseFloat(minSocPct) || 20,
           max_soc_pct: parseFloat(maxSocPct) || 100,
           auto_push_enabled: autoPushEnabled,
+        },
+      });
+
+      // Save holiday mode (site-level). holiday_until is cleared when holiday
+      // mode is off or no return date is set (an out-of-set null clears it).
+      await apiFetch('/sites/me', {
+        method: 'PATCH',
+        accessToken,
+        body: {
+          holiday_mode: holidayMode,
+          holiday_until: holidayMode && holidayUntil
+            ? new Date(`${holidayUntil}T23:59:59`).toISOString()
+            : null,
         },
       });
 
@@ -257,6 +285,51 @@ export default function CredentialsSettings() {
               </span>
             </label>
           </div>
+
+          <h2 style={styles.sectionTitle}>Holiday Mode</h2>
+
+          <div style={styles.toggleRow}>
+            <div style={styles.toggleInfo}>
+              <label style={styles.label}>Household away</label>
+              <p style={styles.toggleHint}>
+                While on, the demand forecast drops to baseload (fridge, router, standby) instead of your
+                usual routine, so the battery isn&apos;t planned around appliances you won&apos;t run.
+                Anything you schedule on the Events page (e.g. a single Cosy run) is still included.
+              </p>
+            </div>
+            <label style={styles.toggle}>
+              <input
+                type="checkbox"
+                checked={holidayMode}
+                onChange={(e) => setHolidayMode(e.target.checked)}
+                style={styles.toggleInput}
+              />
+              <span style={{
+                ...styles.toggleSlider,
+                backgroundColor: holidayMode ? '#C3F53C' : '#202938',
+              }}>
+                <span style={{
+                  ...styles.toggleKnob,
+                  transform: holidayMode ? 'translateX(22px)' : 'translateX(2px)',
+                }} />
+              </span>
+            </label>
+          </div>
+
+          {holidayMode && (
+            <div style={{ marginTop: '12px' }}>
+              <label style={styles.label}>Return date (optional)</label>
+              <input
+                type="date"
+                value={holidayUntil}
+                onChange={(e) => setHolidayUntil(e.target.value)}
+                style={styles.input}
+              />
+              <p style={styles.toggleHint}>
+                Holiday mode turns itself off after this date. Leave blank to keep it on until you switch it off.
+              </p>
+            </div>
+          )}
 
           <h2 style={styles.sectionTitle}>API Credentials</h2>
 

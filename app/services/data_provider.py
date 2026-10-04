@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -6,6 +6,70 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.encryption import encrypt_provider_config, decrypt_provider_config
+
+
+# Fallback energy (kWh) per appliance for a planned event that has no
+# `energy_kwh` set. Only seeds the holiday forecast; a measured/entered value
+# always wins. Kept deliberately rough — these are the appliances Tom can
+# schedule while away, and the Cosy is the one that matters.
+PLANNED_EVENT_FALLBACK_KWH = {
+    "cosy": 0.8,
+    "washing_machine": 0.7,
+    "dishwasher": 0.9,
+    "tumble_dryer": 1.5,
+    "oven": 1.8,
+    "hob": 0.6,
+    "airfryer": 0.4,
+    "heating": 1.0,
+}
+DEFAULT_EVENT_FALLBACK_KWH = 0.5
+HORIZON_HOURS = 48
+
+
+def _holiday_active(session, site_id: str) -> bool:
+    """True if holiday mode is on for the site and hasn't auto-expired."""
+    row = session.execute(
+        text("SELECT holiday_mode, holiday_until FROM sites WHERE id = :sid"),
+        {"sid": site_id},
+    ).mappings().first()
+    if not row or not row["holiday_mode"]:
+        return False
+    until = row["holiday_until"]
+    if until is not None and datetime.now(timezone.utc) > until:
+        return False
+    return True
+
+
+def _add_planned_events(df: pd.DataFrame, session, site_id: str, now: datetime) -> None:
+    """Add explicitly scheduled (status='planned') events to `df['demand']`, in place.
+
+    Each event's energy is spread evenly across the half-hour slots its window
+    overlaps. Only called in holiday mode: in normal mode the learned 7-day
+    average already contains the routine, so injecting the same event again
+    would double-count it.
+    """
+    horizon_end = now + timedelta(hours=HORIZON_HOURS)
+    rows = session.execute(text("""
+        SELECT appliance, start_time, end_time, energy_kwh
+        FROM demand_events
+        WHERE site_id = :sid
+          AND status = 'planned'
+          AND start_time < :hend
+          AND COALESCE(end_time, start_time + interval '30 minutes') > :nstart
+    """), {"sid": site_id, "hend": horizon_end, "nstart": now}).mappings().all()
+
+    for e in rows:
+        start = e["start_time"]
+        end = e["end_time"] or (start + timedelta(minutes=30))
+        energy = e["energy_kwh"]
+        if energy is None:
+            energy = PLANNED_EVENT_FALLBACK_KWH.get(e["appliance"], DEFAULT_EVENT_FALLBACK_KWH)
+        # A slot covers (period_end - 30min, period_end]; it overlaps the event
+        # if its start is before the event ends and its end is after it starts.
+        mask = (df["period_end"] - pd.Timedelta(minutes=30) < end) & (df["period_end"] > start)
+        n = int(mask.sum())
+        if n > 0:
+            df.loc[mask, "demand"] = df.loc[mask, "demand"] + (energy / n)
 
 
 def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
@@ -40,7 +104,12 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
             SELECT
                 floor(date_part('hour', period_end) * 2 
                     + date_part('minute', period_end) / 30) AS hh_slot,
-                AVG(value_kw) / 2.0 AS avg_kwh
+                AVG(value_kw) / 2.0 AS avg_kwh,
+                -- Baseload floor: the 20th percentile of the 5-min samples in
+                -- this half-hour-of-day slot over the trailing 7 days. This is
+                -- the always-on load (fridge/router/standby) with appliance
+                -- events stripped out. Used by holiday mode.
+                percentile_cont(0.2) WITHIN GROUP (ORDER BY value_kw) / 2.0 AS base_kwh
             FROM five_min
             GROUP BY hh_slot
         ),
@@ -79,7 +148,8 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
             COALESCE(sf.solar_kwh, 0.0) AS pv_estimate,
             COALESCE(ar.import_price, ph.avg_import_price) AS price,
             COALESCE(ar.export_price, ph.avg_export_price) AS export_price,
-            COALESCE(h.avg_kwh, 0.3) AS demand,
+            COALESCE(h.avg_kwh, 0.3) AS demand_avg,
+            COALESCE(h.base_kwh, 0.3) AS demand_base,
             (ar.import_price IS NULL) AS is_synthetic
         FROM forecast_series f
         LEFT JOIN solcast_forecast sf
@@ -114,8 +184,17 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         # price: may be NULL (backfilled from price_history when unpublished)
         df["price"] = df["price"].astype(float)
         df["export_price"] = df["export_price"].astype(float)
-        # demand_forecast_kwh -> kWh for half-hour
-        df["demand"] = df["demand"].astype(float) 
+
+        # Demand: normal mode keeps the learned 7-day half-hour-of-day average
+        # (unchanged behaviour). Holiday mode collapses to the baseload floor,
+        # then adds explicitly scheduled (planned) events — so a single Cosy run
+        # can still be scheduled before returning home.
+        if _holiday_active(session, site_id):
+            df["demand"] = df["demand_base"].astype(float)
+            _add_planned_events(df, session, site_id, datetime.now(timezone.utc))
+        else:
+            df["demand"] = df["demand_avg"].astype(float)
+
         # is_synthetic: True where the price is a backfilled average rather than
         # a published rate. Postgres boolean may arrive as bool or 't'/'f'.
         if "is_synthetic" in df.columns:
@@ -129,15 +208,49 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
 
 
 def get_user_site(user_id: str) -> dict | None:
-    """Look up the user's site by their auth UID. Returns dict with id, name, timezone or None."""
+    """Look up the user's site by their auth UID.
+
+    Returns site id, name, timezone plus the holiday-mode fields.
+    """
     session = SessionLocal()
     try:
         result = session.execute(
-            text("SELECT id, name, timezone FROM sites WHERE user_id = :uid LIMIT 1"),
+            text("SELECT id, name, timezone, holiday_mode, holiday_until FROM sites WHERE user_id = :uid LIMIT 1"),
             {"uid": user_id}
         )
         row = result.mappings().first()
         return dict(row) if row else None
+    finally:
+        session.close()
+
+
+def update_site_holiday(site_id: str, updates: dict) -> dict | None:
+    """Update the holiday-mode fields on a site.
+
+    `updates` may contain `holiday_mode` and/or `holiday_until` (a datetime or
+    None to clear). Fields absent from the dict are left unchanged; an explicit
+    None for `holiday_until` clears it.
+    """
+    allowed = {"holiday_mode", "holiday_until"}
+    fields = {k: v for k, v in updates.items() if k in allowed}
+    if not fields:
+        return None
+    session = SessionLocal()
+    try:
+        set_parts = [f"{k} = :{k}" for k in fields]
+        sql = text(f"""UPDATE sites
+                       SET {', '.join(set_parts)}
+                       WHERE id = :sid
+                       RETURNING id, name, timezone, holiday_mode, holiday_until""")
+        result = session.execute(sql, {"sid": site_id, **fields})
+        row = result.mappings().first()
+        session.commit()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("id"):
+            d["id"] = str(d["id"])
+        return d
     finally:
         session.close()
 
