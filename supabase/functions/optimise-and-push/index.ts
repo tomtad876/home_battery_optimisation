@@ -83,6 +83,34 @@ async function callBackendOptimise(
 }
 
 async function notify(summary: { success: boolean; processed: number; total: number; errors: string[] }) {
+  // Sentry Crons heartbeat (the chosen provider). One terminal check-in per
+  // run. monitor_config is re-sent so the monitor self-heals if ever deleted —
+  // it was originally created by upsert from this same payload. A *missing*
+  // check-in (cron disabled, function crashing before this point) is what makes
+  // this a dead-man's switch, not just a failure alert (cf. 2026-09-13).
+  const sentryCron = Deno.env.get("SENTRY_CRON_URL");
+  if (sentryCron) {
+    try {
+      const resp = await fetch(sentryCron, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: summary.success ? "ok" : "error",
+          monitor_config: {
+            schedule: { type: "crontab", value: "0,30 6-22 * * *" },
+            timezone: "Europe/London",
+            checkin_margin: 60,
+            max_runtime: 15,
+            failure_issue_threshold: 2,
+            recovery_threshold: 1,
+          },
+        }),
+      });
+      if (!resp.ok) console.error(`optimise-and-push: sentry cron check-in returned ${resp.status}`);
+    } catch (e) {
+      console.error("optimise-and-push: sentry cron check-in failed", e);
+    }
+  }
   // Heartbeat / dead-man's switch. Ping on EVERY run so a *missing* ping (cron
   // disabled, function crashing before this point) also alerts — that is the
   // 2026-09-13 silent-failure mode a failure-only alert would miss.
