@@ -319,7 +319,7 @@ def get_user_battery(user_id: str) -> dict | None:
         result = session.execute(
             text("""SELECT b.id, b.site_id, b.capacity_kwh, b.max_charge_kw,
                            b.max_discharge_kw, b.min_soc_pct, b.max_soc_pct,
-                           b.provider_type, b.provider_config
+                           b.provider_type, b.provider_config, b.auto_push_enabled
                     FROM batteries b
                     JOIN sites s ON s.id = b.site_id
                     WHERE s.user_id = :uid
