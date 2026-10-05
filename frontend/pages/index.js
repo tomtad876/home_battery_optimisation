@@ -19,6 +19,7 @@ export default function Home() {
   const [user, setUser] = useState(null)
   const [site, setSite] = useState(null)
   const [battery, setBattery] = useState(null)
+  const [batteryLoading, setBatteryLoading] = useState(true)
   const [siteLoading, setSiteLoading] = useState(true)
   const [siteError, setSiteError] = useState(null)
   const [serverWaking, setServerWaking] = useState(false)
@@ -82,6 +83,7 @@ export default function Home() {
         apiFetch('/batteries/me', { accessToken })
           .then((b) => setBattery(b?.battery ?? null))
           .catch(() => {})
+          .finally(() => setBatteryLoading(false))
       }
     } catch (err) {
       setSite(null)
@@ -356,7 +358,7 @@ export default function Home() {
                   title="Change in Settings"
                   className={`text-xs px-3 py-1 rounded-full border ${battery?.auto_push_enabled ? 'bg-signal/15 border-signal/40 text-signal' : 'bg-surface-2 border-hairline text-ink-muted'}`}
                 >
-                  Auto-push: {battery?.auto_push_enabled ? 'ON' : 'OFF'}
+                  Auto-push: {batteryLoading ? '…' : (battery?.auto_push_enabled ? 'ON' : 'OFF')}
                 </a>
                 <a
                   href="/settings"
