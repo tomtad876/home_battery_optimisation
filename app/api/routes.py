@@ -51,9 +51,10 @@ def health():
     """Liveness plus the deployed build.
 
     The build fields matter: Render keeps the previous instance serving after a
-    failed build, so a bare 200 does not mean the latest commit is live.
+    failed build, so a bare 200 does not mean the latest commit is live. The
+    `sentry` flag confirms the error-monitoring DSN reached the running process.
     """
-    return {"status": "ok", **build_info()}
+    return {"status": "ok", **build_info(), "sentry": bool(os.environ.get("SENTRY_DSN"))}
 
 
 @router.get("/version")
