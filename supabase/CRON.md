@@ -92,11 +92,12 @@ pressing a button. Three deliberate choices:
   unset. See the security-debt note in
   [`cron/optimise_and_push.sql`](cron/optimise_and_push.sql).
 
-**Alerting.** The function pings `HEALTHCHECK_PING_URL` on every run (success) or
-`…/fail` on any error, and optionally POSTs `ALERT_WEBHOOK_URL` on failure. The
-heartbeat is the important half: a *missing* ping (cron disabled, function
-crashing early) also alerts, which is the 2026-09-13 silent-failure mode a
-failure-only webhook would miss. Runs are also audited in the `schedules` table.
+**Alerting (Sentry Crons).** The function sends one Sentry cron check-in per run
+to `SENTRY_CRON_URL` (monitor `optimise-and-push`, status `ok`/`error`, with
+`monitor_config` so the monitor self-heals). A *missing* check-in also alerts —
+that is the 2026-09-13 silent-failure mode a failure-only alert would miss.
+Legacy `HEALTHCHECK_PING_URL` (healthchecks.io) and `ALERT_WEBHOOK_URL` remain
+supported but are unset. Runs are also audited in the `schedules` table.
 
 Apply / revert: [`cron/optimise_and_push.sql`](cron/optimise_and_push.sql).
 
