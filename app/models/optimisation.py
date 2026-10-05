@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Float, DateTime, ForeignKey, String
+from sqlalchemy import Column, Float, DateTime, ForeignKey, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
@@ -13,6 +13,7 @@ class OptimisationRun(Base):
     initial_soc_kwh = Column(Float, nullable=False)
     total_cost_estimate = Column(Float)
     status = Column(String, default="pending")
+    created_at = Column(DateTime(timezone=True), server_default=text("now()"))
 
 class OptimisationInterval(Base):
     __tablename__ = "optimisation_intervals"
@@ -21,6 +22,9 @@ class OptimisationInterval(Base):
     optimisation_run_id = Column(UUID(as_uuid=True), ForeignKey("optimisation_runs.id"))
 
     period_end = Column(DateTime, nullable=False)
+    # The demand forecast this plan was optimised against — lets us score
+    # forecast accuracy by joining to actual loads later.
+    demand_kwh = Column(Float)
     charge_kwh = Column(Float)
     discharge_kwh = Column(Float)
     soc_kwh = Column(Float)
