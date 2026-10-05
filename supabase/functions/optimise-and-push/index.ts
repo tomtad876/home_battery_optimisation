@@ -301,7 +301,7 @@ serve(async (req: Request) => {
           .limit(1)
           .single();
 
-        await client.from("schedules").insert({
+        const { error: auditError } = await client.from("schedules").insert({
           optimisation_run_id: lastRun?.id || null,
           status: pushed ? "sent" : "failed",
           pushed_at: now.toISOString(),
@@ -311,6 +311,11 @@ serve(async (req: Request) => {
           provider_response: providerResponse,
           error_message: pushError,
         });
+        if (auditError) {
+          // Don't swallow this — a missing audit row is how the schedules table
+          // silently stayed empty. Surface it on the run (and the heartbeat).
+          errors.push(`Battery ${battery.id}: audit insert failed: ${auditError.message}`);
+        }
 
         if (pushed) {
           processed++;

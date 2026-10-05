@@ -18,6 +18,8 @@ export default function Home() {
   const [error, setError] = useState(null)
   const [user, setUser] = useState(null)
   const [site, setSite] = useState(null)
+  const [battery, setBattery] = useState(null)
+  const [batteryLoading, setBatteryLoading] = useState(true)
   const [siteLoading, setSiteLoading] = useState(true)
   const [siteError, setSiteError] = useState(null)
   const [serverWaking, setServerWaking] = useState(false)
@@ -76,6 +78,12 @@ export default function Home() {
       setSite(data?.site ?? null)
       if (data?.site) {
         fetchRealtime(accessToken)
+        // Auto-push status lives on the battery row, for the dashboard chip.
+        // Non-fatal: the chip just shows OFF if this fails.
+        apiFetch('/batteries/me', { accessToken })
+          .then((b) => setBattery(b?.battery ?? null))
+          .catch(() => {})
+          .finally(() => setBatteryLoading(false))
       }
     } catch (err) {
       setSite(null)
@@ -342,18 +350,29 @@ export default function Home() {
                 </div>
               </div>
 
-              {holidayActive && (
-                <div className="bg-signal/10 border border-signal/40 rounded-card px-4 py-3 mb-6">
-                  <p className="text-ink text-sm">
-                    <span className="font-semibold">Holiday mode is on.</span>{' '}
-                    Demand is forecast as baseload (plus anything you schedule on the Events page)
-                    {site.holiday_until
-                      ? ` until ${new Date(site.holiday_until).toLocaleDateString('en-GB', { timeZone: 'Europe/London' })}`
-                      : ''}
-                    . <a href="/settings" className="underline hover:brightness-110">Change</a>
-                  </p>
-                </div>
-              )}
+              {/* At-a-glance automation status. Read-only — change it in Settings.
+                  Auto-push needs the battery row; holiday mode is on the site. */}
+              <div className="flex flex-wrap items-center gap-2 mb-6">
+                <a
+                  href="/settings"
+                  title="Change in Settings"
+                  className={`text-xs px-3 py-1 rounded-full border ${battery?.auto_push_enabled ? 'bg-signal/15 border-signal/40 text-signal' : 'bg-surface-2 border-hairline text-ink-muted'}`}
+                >
+                  Auto-push: {batteryLoading ? '…' : (battery?.auto_push_enabled ? 'ON' : 'OFF')}
+                </a>
+                <a
+                  href="/settings"
+                  title="Change in Settings"
+                  className={`text-xs px-3 py-1 rounded-full border ${holidayActive ? 'bg-signal/15 border-signal/40 text-signal' : 'bg-surface-2 border-hairline text-ink-muted'}`}
+                >
+                  Holiday mode: {holidayActive ? 'ON' : 'OFF'}
+                </a>
+                {holidayActive && site.holiday_until && (
+                  <span className="text-xs text-ink-faint">
+                    until {new Date(site.holiday_until).toLocaleDateString('en-GB', { timeZone: 'Europe/London' })}
+                  </span>
+                )}
+              </div>
 
               {/* Run controls. Battery config (capacity, power limits, SOC bounds)
                   lives in Settings; the backend reads it, so there is nothing to

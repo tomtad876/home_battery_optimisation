@@ -2,9 +2,15 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { apiFetch, friendlyError } from '@/lib/api';
 
-export default function CredentialsSettings() {
+// Settings is split into three independent cards, each with its own save. The
+// automatic-push and holiday toggles used to live inside the credentials form,
+// so flipping a toggle looked like it did nothing until you clicked "Save
+// Credentials" — and the toggle never reflected the saved value. Now household
+// automation, battery config and API credentials are separate and save
+// separately.
+export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingSection, setSavingSection] = useState(null); // 'automation' | 'battery' | 'credentials'
   const [message, setMessage] = useState(null);
   const [batteryId, setBatteryId] = useState(null);
 
@@ -15,11 +21,12 @@ export default function CredentialsSettings() {
   const [octopusApiKey, setOctopusApiKey] = useState('');
   const [octopusAccountNumber, setOctopusAccountNumber] = useState('');
 
-  const [capacityKwh, setCapacityKwh] = useState('13.5');
-  const [maxChargeKw, setMaxChargeKw] = useState('5.0');
-  const [maxDischargeKw, setMaxDischargeKw] = useState('5.0');
+  const [capacityKwh, setCapacityKwh] = useState('5.0');
+  const [maxChargeKw, setMaxChargeKw] = useState('3.0');
+  const [maxDischargeKw, setMaxDischargeKw] = useState('3.0');
   const [minSocPct, setMinSocPct] = useState('20');
   const [maxSocPct, setMaxSocPct] = useState('100');
+
   const [autoPushEnabled, setAutoPushEnabled] = useState(false);
   const [holidayMode, setHolidayMode] = useState(false);
   const [holidayUntil, setHolidayUntil] = useState('');
@@ -30,7 +37,6 @@ export default function CredentialsSettings() {
 
   async function loadCredentials() {
     setLoading(true);
-    setMessage(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
@@ -93,44 +99,42 @@ export default function CredentialsSettings() {
         setMaxDischargeKw(String(battery.max_discharge_kw ?? '3.0'));
         setMinSocPct(String(battery.min_soc_pct ?? '20'));
         setMaxSocPct(String(battery.max_soc_pct ?? '100'));
+        // This is why the toggle used to reset to off: the GET didn't return it.
         setAutoPushEnabled(battery.auto_push_enabled ?? false);
       } else {
         setMessage({ type: 'error', text: 'No battery found. Please complete the setup wizard first.' });
       }
     } catch (err) {
-      setMessage({ type: 'error', text: friendlyError(err, 'Failed to load credentials.') });
+      setMessage({ type: 'error', text: friendlyError(err, 'Failed to load settings.') });
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleSave(e) {
-    e.preventDefault();
-    setSaving(true);
+  async function withSession(section, fn) {
+    setSavingSection(section);
     setMessage(null);
-
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
+      await fn(session.access_token);
+    } catch (err) {
+      // Never render a raw FastAPI 422 array — that used to crash this page
+      setMessage({ type: 'error', text: friendlyError(err, `Failed to save ${section} settings.`) });
+    } finally {
+      setSavingSection(null);
+    }
+  }
 
-      const accessToken = session.access_token;
-
-      // Save battery config
+  const saveAutomation = (e) => {
+    e.preventDefault();
+    return withSession('automation', async (accessToken) => {
       await apiFetch('/batteries/me', {
         method: 'PUT',
         accessToken,
-        body: {
-          capacity_kwh: parseFloat(capacityKwh) || 5.0,
-          max_charge_kw: parseFloat(maxChargeKw) || 3.0,
-          max_discharge_kw: parseFloat(maxDischargeKw) || 3.0,
-          min_soc_pct: parseFloat(minSocPct) || 20,
-          max_soc_pct: parseFloat(maxSocPct) || 100,
-          auto_push_enabled: autoPushEnabled,
-        },
+        body: { auto_push_enabled: autoPushEnabled },
       });
-
-      // Save holiday mode (site-level). holiday_until is cleared when holiday
-      // mode is off or no return date is set (an out-of-set null clears it).
+      // holiday_until is cleared when holiday mode is off or no date is set.
       await apiFetch('/sites/me', {
         method: 'PATCH',
         accessToken,
@@ -141,8 +145,35 @@ export default function CredentialsSettings() {
             : null,
         },
       });
+      setMessage({
+        type: 'success',
+        text: `Automation saved — auto-push ${autoPushEnabled ? 'ON' : 'OFF'}`
+          + `${holidayMode ? ', holiday mode ON' : ''}.`,
+      });
+    });
+  };
 
-      // Save API credentials
+  const saveBattery = (e) => {
+    e.preventDefault();
+    return withSession('battery', async (accessToken) => {
+      await apiFetch('/batteries/me', {
+        method: 'PUT',
+        accessToken,
+        body: {
+          capacity_kwh: parseFloat(capacityKwh) || 5.0,
+          max_charge_kw: parseFloat(maxChargeKw) || 3.0,
+          max_discharge_kw: parseFloat(maxDischargeKw) || 3.0,
+          min_soc_pct: parseFloat(minSocPct) || 20,
+          max_soc_pct: parseFloat(maxSocPct) || 100,
+        },
+      });
+      setMessage({ type: 'success', text: 'Battery settings saved.' });
+    });
+  };
+
+  const saveCredentials = (e) => {
+    e.preventDefault();
+    return withSession('credentials', async (accessToken) => {
       const credBody = {};
       if (solcastApiKey) credBody.solcast_api_key = solcastApiKey;
       if (solcastSystemId) credBody.solcast_system_id = solcastSystemId;
@@ -156,257 +187,152 @@ export default function CredentialsSettings() {
         accessToken,
         body: credBody,
       });
+      setMessage({ type: 'success', text: 'API credentials saved.' });
+    });
+  };
 
-      setMessage({ type: 'success', text: 'Settings saved successfully.' });
-    } catch (err) {
-      // Never render a raw FastAPI 422 array — that used to crash this page
-      setMessage({ type: 'error', text: friendlyError(err, 'Failed to save.') });
-    } finally {
-      setSaving(false);
-    }
-  }
+  const Toggle = ({ checked, onChange }) => (
+    <label style={styles.toggle}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} style={styles.toggleInput} />
+      <span style={{ ...styles.toggleSlider, backgroundColor: checked ? '#C3F53C' : '#202938' }}>
+        <span style={{ ...styles.toggleKnob, transform: checked ? 'translateX(22px)' : 'translateX(2px)' }} />
+      </span>
+    </label>
+  );
 
   if (loading) {
     return (
       <div style={styles.container}>
-        <div style={styles.card}>
-          <p style={styles.loading}>Loading...</p>
-        </div>
+        <p style={styles.loading}>Loading…</p>
       </div>
     );
   }
 
   return (
     <div style={styles.container}>
-      <div style={styles.card}>
-        <h1 style={styles.title}>API Credentials</h1>
-        <p style={styles.subtitle}>
-          Configure your Solcast and FoxESS API keys. These are used to fetch solar forecasts and energy usage data for optimisation.
-        </p>
+      <div style={styles.navRow}>
+        <a href="/" style={styles.backLink}>← Dashboard</a>
+        <h1 style={styles.title}>Settings</h1>
+      </div>
 
-        {message && (
-          <div style={{
-            ...styles.message,
-            backgroundColor: message.type === 'success' ? 'rgba(52,211,153,0.10)' : 'rgba(248,113,113,0.10)',
-            color: message.type === 'success' ? '#6EE7B7' : '#FCA5A5',
-            borderColor: message.type === 'success' ? 'rgba(52,211,153,0.32)' : 'rgba(248,113,113,0.32)',
-          }}>
-            {message.text}
+      {message && (
+        <div style={{
+          ...styles.message,
+          backgroundColor: message.type === 'success' ? 'rgba(52,211,153,0.10)' : 'rgba(248,113,113,0.10)',
+          color: message.type === 'success' ? '#6EE7B7' : '#FCA5A5',
+          borderColor: message.type === 'success' ? 'rgba(52,211,153,0.32)' : 'rgba(248,113,113,0.32)',
+        }}>
+          {message.text}
+        </div>
+      )}
+
+      {/* 1. Automation — auto-push + holiday mode, separate from credentials */}
+      <form onSubmit={saveAutomation} style={styles.card}>
+        <h2 style={{ ...styles.sectionTitle, marginTop: 0 }}>Automation</h2>
+
+        <div style={styles.toggleRow}>
+          <div style={styles.toggleInfo}>
+            <label style={styles.label}>Auto-push schedule to inverter</label>
+            <p style={styles.toggleHint}>
+              When on, your optimised schedule is pushed to your FoxESS inverter automatically every 30 minutes
+              through the day. You get an alert if a push fails or stops.
+            </p>
+          </div>
+          <Toggle checked={autoPushEnabled} onChange={setAutoPushEnabled} />
+        </div>
+
+        <div style={styles.toggleRow}>
+          <div style={styles.toggleInfo}>
+            <label style={styles.label}>Holiday mode (household away)</label>
+            <p style={styles.toggleHint}>
+              The demand forecast drops to baseload (fridge, router, standby) instead of your usual routine.
+              Anything you schedule on the Events page is still included.
+            </p>
+          </div>
+          <Toggle checked={holidayMode} onChange={setHolidayMode} />
+        </div>
+
+        {holidayMode && (
+          <div style={{ marginTop: '4px' }}>
+            <label style={styles.label}>Return date (optional)</label>
+            <input type="date" value={holidayUntil} onChange={(e) => setHolidayUntil(e.target.value)} style={styles.input} />
+            <p style={styles.toggleHint}>Turns holiday mode off after this date. Leave blank to keep it on until you switch it off.</p>
           </div>
         )}
 
-        <form onSubmit={handleSave}>
-          <h2 style={styles.sectionTitle}>Battery Configuration</h2>
+        <button type="submit" disabled={savingSection === 'automation'} style={{ ...styles.button, opacity: savingSection === 'automation' ? 0.6 : 1 }}>
+          {savingSection === 'automation' ? 'Saving…' : 'Save automation settings'}
+        </button>
+      </form>
 
-          <div style={styles.row}>
-            <div style={styles.halfField}>
-              <label style={styles.label}>Capacity (kWh)</label>
-              <input
-                type="number"
-                step="0.1"
-                value={capacityKwh}
-                onChange={(e) => setCapacityKwh(e.target.value)}
-                style={styles.input}
-              />
-            </div>
-            <div style={styles.halfField}>
-              <label style={styles.label}>Max Charge (kW)</label>
-              <input
-                type="number"
-                step="0.1"
-                value={maxChargeKw}
-                onChange={(e) => setMaxChargeKw(e.target.value)}
-                style={styles.input}
-              />
-            </div>
+      {/* 2. Battery configuration */}
+      <form onSubmit={saveBattery} style={styles.card}>
+        <h2 style={{ ...styles.sectionTitle, marginTop: 0 }}>Battery</h2>
+
+        <div style={styles.row}>
+          <div style={styles.halfField}>
+            <label style={styles.label}>Capacity (kWh)</label>
+            <input type="number" step="0.1" value={capacityKwh} onChange={(e) => setCapacityKwh(e.target.value)} style={styles.input} />
           </div>
-
-          <div style={styles.row}>
-            <div style={styles.halfField}>
-              <label style={styles.label}>Max Discharge (kW)</label>
-              <input
-                type="number"
-                step="0.1"
-                value={maxDischargeKw}
-                onChange={(e) => setMaxDischargeKw(e.target.value)}
-                style={styles.input}
-              />
-            </div>
-            <div style={styles.halfField}>
-              <label style={styles.label}>Min SOC (%)</label>
-              <input
-                type="number"
-                step="1"
-                value={minSocPct}
-                onChange={(e) => setMinSocPct(e.target.value)}
-                style={styles.input}
-              />
-            </div>
+          <div style={styles.halfField}>
+            <label style={styles.label}>Max Charge (kW)</label>
+            <input type="number" step="0.1" value={maxChargeKw} onChange={(e) => setMaxChargeKw(e.target.value)} style={styles.input} />
           </div>
+        </div>
 
-          <div style={styles.row}>
-            <div style={styles.halfField}>
-              <label style={styles.label}>Max SOC (%)</label>
-              <input
-                type="number"
-                step="1"
-                value={maxSocPct}
-                onChange={(e) => setMaxSocPct(e.target.value)}
-                style={styles.input}
-              />
-            </div>
-            <div style={styles.halfField} />
+        <div style={styles.row}>
+          <div style={styles.halfField}>
+            <label style={styles.label}>Max Discharge (kW)</label>
+            <input type="number" step="0.1" value={maxDischargeKw} onChange={(e) => setMaxDischargeKw(e.target.value)} style={styles.input} />
           </div>
-
-          <h2 style={styles.sectionTitle}>Automatic Schedule Push</h2>
-
-          <div style={styles.toggleRow}>
-            <div style={styles.toggleInfo}>
-              <label style={styles.label}>Auto-push schedule to inverter</label>
-              <p style={styles.toggleHint}>
-                When enabled, your optimised battery schedule is automatically pushed to your FoxESS inverter every 30 minutes.
-              </p>
-            </div>
-            <label style={styles.toggle}>
-              <input
-                type="checkbox"
-                checked={autoPushEnabled}
-                onChange={(e) => setAutoPushEnabled(e.target.checked)}
-                style={styles.toggleInput}
-              />
-              <span style={{
-                ...styles.toggleSlider,
-                backgroundColor: autoPushEnabled ? '#C3F53C' : '#202938',
-              }}>
-                <span style={{
-                  ...styles.toggleKnob,
-                  transform: autoPushEnabled ? 'translateX(22px)' : 'translateX(2px)',
-                }} />
-              </span>
-            </label>
+          <div style={styles.halfField}>
+            <label style={styles.label}>Min SOC (%)</label>
+            <input type="number" step="1" value={minSocPct} onChange={(e) => setMinSocPct(e.target.value)} style={styles.input} />
           </div>
+        </div>
 
-          <h2 style={styles.sectionTitle}>Holiday Mode</h2>
-
-          <div style={styles.toggleRow}>
-            <div style={styles.toggleInfo}>
-              <label style={styles.label}>Household away</label>
-              <p style={styles.toggleHint}>
-                While on, the demand forecast drops to baseload (fridge, router, standby) instead of your
-                usual routine, so the battery isn&apos;t planned around appliances you won&apos;t run.
-                Anything you schedule on the Events page (e.g. a single Cosy run) is still included.
-              </p>
-            </div>
-            <label style={styles.toggle}>
-              <input
-                type="checkbox"
-                checked={holidayMode}
-                onChange={(e) => setHolidayMode(e.target.checked)}
-                style={styles.toggleInput}
-              />
-              <span style={{
-                ...styles.toggleSlider,
-                backgroundColor: holidayMode ? '#C3F53C' : '#202938',
-              }}>
-                <span style={{
-                  ...styles.toggleKnob,
-                  transform: holidayMode ? 'translateX(22px)' : 'translateX(2px)',
-                }} />
-              </span>
-            </label>
+        <div style={styles.row}>
+          <div style={styles.halfField}>
+            <label style={styles.label}>Max SOC (%)</label>
+            <input type="number" step="1" value={maxSocPct} onChange={(e) => setMaxSocPct(e.target.value)} style={styles.input} />
           </div>
+          <div style={styles.halfField} />
+        </div>
 
-          {holidayMode && (
-            <div style={{ marginTop: '12px' }}>
-              <label style={styles.label}>Return date (optional)</label>
-              <input
-                type="date"
-                value={holidayUntil}
-                onChange={(e) => setHolidayUntil(e.target.value)}
-                style={styles.input}
-              />
-              <p style={styles.toggleHint}>
-                Holiday mode turns itself off after this date. Leave blank to keep it on until you switch it off.
-              </p>
-            </div>
-          )}
+        <button type="submit" disabled={savingSection === 'battery'} style={{ ...styles.button, opacity: savingSection === 'battery' ? 0.6 : 1 }}>
+          {savingSection === 'battery' ? 'Saving…' : 'Save battery settings'}
+        </button>
+      </form>
 
-          <h2 style={styles.sectionTitle}>API Credentials</h2>
-
-          <label style={styles.label}>API Key</label>
-          <input
-            type="password"
-            value={solcastApiKey}
-            onChange={(e) => setSolcastApiKey(e.target.value)}
-            placeholder="Your Solcast API key"
-            style={styles.input}
-          />
-
-          <label style={styles.label}>PV System ID</label>
-          <input
-            type="text"
-            value={solcastSystemId}
-            onChange={(e) => setSolcastSystemId(e.target.value)}
-            placeholder="e.g. 7a6e5f2e-..."
-            style={styles.input}
-          />
-
-          <h2 style={styles.sectionTitle}>FoxESS (Energy Usage)</h2>
-
-          <label style={styles.label}>API Key (Token)</label>
-          <input
-            type="password"
-            value={foxessApiKey}
-            onChange={(e) => setFoxessApiKey(e.target.value)}
-            placeholder="Your FoxESS API token"
-            style={styles.input}
-          />
-
-          <label style={styles.label}>Device Serial Number</label>
-          <input
-            type="text"
-            value={foxessDeviceSn}
-            onChange={(e) => setFoxessDeviceSn(e.target.value)}
-            placeholder="Your FoxESS device SN"
-            style={styles.input}
-          />
-
-          <h2 style={styles.sectionTitle}>Octopus (Heat Pump)</h2>
-
-          <label style={styles.label}>Developer API Key</label>
-          <input
-            type="password"
-            value={octopusApiKey}
-            onChange={(e) => setOctopusApiKey(e.target.value)}
-            placeholder="sk_live_..."
-            style={styles.input}
-          />
-
-          <label style={styles.label}>Account Number</label>
-          <input
-            type="text"
-            value={octopusAccountNumber}
-            onChange={(e) => setOctopusAccountNumber(e.target.value)}
-            placeholder="e.g. A-1234ABCD"
-            style={styles.input}
-          />
-
-          <button
-            type="submit"
-            disabled={saving}
-            style={{
-              ...styles.button,
-              opacity: saving ? 0.6 : 1,
-            }}
-          >
-            {saving ? 'Saving...' : 'Save Credentials'}
-          </button>
-        </form>
-
-        <p style={styles.hint}>
-          Keys are stored encrypted in your account. They are only used by the background data fetcher to pull your solar forecast and usage history.
+      {/* 3. API credentials */}
+      <form onSubmit={saveCredentials} style={styles.card}>
+        <h2 style={{ ...styles.sectionTitle, marginTop: 0 }}>API Credentials</h2>
+        <p style={{ ...styles.toggleHint, marginBottom: '4px' }}>
+          Stored encrypted. Used by the background fetchers to pull your solar forecast, usage history and heat-pump data.
         </p>
-      </div>
+
+        <label style={styles.label}>Solcast API Key</label>
+        <input type="password" value={solcastApiKey} onChange={(e) => setSolcastApiKey(e.target.value)} placeholder="Your Solcast API key" style={styles.input} />
+
+        <label style={styles.label}>Solcast PV System ID</label>
+        <input type="text" value={solcastSystemId} onChange={(e) => setSolcastSystemId(e.target.value)} placeholder="e.g. 7a6e5f2e-..." style={styles.input} />
+
+        <label style={styles.label}>FoxESS API Key (Token)</label>
+        <input type="password" value={foxessApiKey} onChange={(e) => setFoxessApiKey(e.target.value)} placeholder="Your FoxESS API token" style={styles.input} />
+
+        <label style={styles.label}>FoxESS Device Serial Number</label>
+        <input type="text" value={foxessDeviceSn} onChange={(e) => setFoxessDeviceSn(e.target.value)} placeholder="Your FoxESS device SN" style={styles.input} />
+
+        <label style={styles.label}>Octopus Developer API Key</label>
+        <input type="password" value={octopusApiKey} onChange={(e) => setOctopusApiKey(e.target.value)} placeholder="sk_live_..." style={styles.input} />
+
+        <label style={styles.label}>Octopus Account Number</label>
+        <input type="text" value={octopusAccountNumber} onChange={(e) => setOctopusAccountNumber(e.target.value)} placeholder="e.g. A-1234ABCD" style={styles.input} />
+
+        <button type="submit" disabled={savingSection === 'credentials'} style={{ ...styles.button, opacity: savingSection === 'credentials' ? 0.6 : 1 }}>
+          {savingSection === 'credentials' ? 'Saving…' : 'Save credentials'}
+        </button>
+      </form>
     </div>
   );
 }
@@ -416,31 +342,39 @@ const styles = {
     minHeight: '100vh',
     background: '#0B0F17',
     display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'flex-start',
-    padding: '40px 20px',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '20px',
+    padding: '40px 20px 60px',
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+  },
+  navRow: {
+    maxWidth: '520px',
+    width: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+  },
+  backLink: {
+    color: '#8B95A7',
+    fontSize: '14px',
+    textDecoration: 'none',
   },
   card: {
     background: '#121826',
     border: '1px solid #202938',
     borderRadius: '14px',
-    padding: '40px',
+    padding: '28px 32px',
     maxWidth: '520px',
     width: '100%',
+    boxSizing: 'border-box',
     boxShadow: '0 1px 2px rgba(0,0,0,0.35), 0 12px 32px rgba(0,0,0,0.35)',
   },
   title: {
     fontSize: '24px',
     fontWeight: '700',
     color: '#E7ECF5',
-    margin: '0 0 8px 0',
-  },
-  subtitle: {
-    fontSize: '14px',
-    color: '#8B95A7',
-    margin: '0 0 24px 0',
-    lineHeight: '1.5',
+    margin: 0,
   },
   sectionTitle: {
     fontSize: '16px',
@@ -483,21 +417,17 @@ const styles = {
     cursor: 'pointer',
   },
   message: {
+    maxWidth: '520px',
+    width: '100%',
+    boxSizing: 'border-box',
     padding: '12px 16px',
     borderRadius: '8px',
     border: '1px solid',
-    marginBottom: '16px',
     fontSize: '14px',
   },
-  hint: {
-    marginTop: '20px',
-    fontSize: '12px',
-    color: '#5A6376',
-    lineHeight: '1.5',
-  },
   loading: {
-    textAlign: 'center',
     color: '#8B95A7',
+    marginTop: '80px',
   },
   row: {
     display: 'flex',
