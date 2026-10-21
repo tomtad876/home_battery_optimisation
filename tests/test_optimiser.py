@@ -188,6 +188,22 @@ class TestOptimiser:
             f"With salvage above export the battery should hold charge, got {held['soc_pct'].iloc[-1]:.1f}%"
         )
 
+    def test_resolve_salvage_prefers_an_explicit_value(self):
+        """Callers persist the value they resolved; it must match what the LP uses."""
+        from app.core.optimiser import resolve_salvage_value_pence
+        inputs = pd.DataFrame({"price": [25.0] * 4 + [50.0] * 1})
+
+        assert resolve_salvage_value_pence(inputs, 42.0) == 42.0
+
+    def test_resolve_salvage_defaults_to_the_lp_default(self):
+        """Without an explicit value, the resolver must return the LP's own default."""
+        from app.core.optimiser import resolve_salvage_value_pence, _default_salvage_value_pence
+        inputs = pd.DataFrame({"price": [25.0, 30.0, 40.0], "is_synthetic": [False, False, True]})
+
+        # Mean of the real slots only (25, 30) => 27.5, exactly as the LP would.
+        assert resolve_salvage_value_pence(inputs) == pytest.approx(27.5)
+        assert resolve_salvage_value_pence(inputs) == _default_salvage_value_pence(inputs)
+
     def test_default_salvage_excludes_synthetic_prices(self):
         """Default salvage = mean of real prices; synthetic tail must not inflate it."""
         from app.core.optimiser import _default_salvage_value_pence
