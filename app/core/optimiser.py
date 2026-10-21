@@ -21,21 +21,46 @@ DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 # import/export at battery power, which is what broke on a kettle + oven draw.
 DEFAULT_GRID_LIMIT_KW = 15.0
 
+# Terminal salvage value: which percentile of the real import prices to value
+# energy left in the battery at the end of the horizon.
+#
+# This used to be the *mean*, which was fine while Agile was quiet but is
+# systematically wrong in the current regime: in the ten days to 2026-10-21
+# every single day peaked at 47-58p with an export peak of 24-30p, i.e. a
+# ~25p/kWh gap between exporting stored energy and buying it back at the peak.
+# A mean of 24-37p undervalues stored energy, so the LP exports surplus at
+# ~26p and buys it back at ~52p (seen 2026-10-20: battery at ~20% going into a
+# 52p afternoon). The 85th percentile over the same ten days was 38-46p — high
+# enough to make holding worth more than exporting, without pricing every kWh
+# at a once-a-day spike. Tunable via `salvage_percentile` on the optimiser.
+DEFAULT_SALVAGE_PERCENTILE = 85
 
-def _default_salvage_value_pence(inputs_df: pd.DataFrame) -> float:
-    """Default salvage value: mean import price of the real (non-backfilled) periods.
+
+def _default_salvage_value_pence(
+    inputs_df: pd.DataFrame,
+    percentile: float = DEFAULT_SALVAGE_PERCENTILE,
+) -> float:
+    """Default salvage value: a high percentile of the real (non-backfilled) prices.
 
     The salvage value is the price the optimiser uses to value energy left in the
-    battery at the end of the horizon. Defaulting it to the mean of the *real*
-    published prices (excluding any synthetic/backfilled tail) makes it a typical
-    "cost of refilling tomorrow" without letting estimated tail prices distort it.
+    battery at the end of the horizon. Excluding the synthetic/backfilled tail
+    stops estimated prices from setting that floor; using a percentile rather
+    than the mean stops the optimiser valuing stored energy at the daily average
+    on a tariff whose expensive hours are worth far more than it (see
+    DEFAULT_SALVAGE_PERCENTILE for the evidence).
     """
+    if not 0 <= percentile <= 100:
+        raise ValueError("salvage percentile must be between 0 and 100")
     if "is_synthetic" in inputs_df.columns:
         real_prices = inputs_df.loc[~inputs_df["is_synthetic"].astype(bool), "price"]
     else:
         real_prices = inputs_df["price"]
     real_prices = real_prices.dropna()
-    return float(real_prices.mean()) if not real_prices.empty else 0.0
+    if real_prices.empty:
+        return 0.0
+    if percentile >= 100:
+        return float(real_prices.max())
+    return float(np.percentile(real_prices.to_numpy(dtype=float), percentile))
 
 
 def mvp_cost_minimiser(
@@ -51,6 +76,7 @@ def mvp_cost_minimiser(
     discharge_efficiency: float = DEFAULT_DISCHARGE_EFFICIENCY,
     grid_limit_kw: float = DEFAULT_GRID_LIMIT_KW,
     dt_hours: float = 0.5,
+    salvage_percentile: float = DEFAULT_SALVAGE_PERCENTILE,
 ) -> pd.DataFrame:
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.
@@ -68,8 +94,12 @@ def mvp_cost_minimiser(
         salvage_value_pence: Value (pence/kWh) of energy left in the battery at
             the end of the horizon. Prevents the terminal timestep from dumping
             stored energy to the grid just because export price is positive —
-            it must beat the cost of replacing that energy. Defaults to the mean
-            import price of the *real* (non-backfilled) periods.
+            it must beat the cost of replacing that energy. Defaults to a high
+            percentile (see `salvage_percentile`) of the *real* (non-backfilled)
+            import prices.
+        salvage_percentile: Percentile of the real import prices used for the
+            default salvage value when `salvage_value_pence` is None. 50 gives
+            the median, 100 the day's peak. Only used when the default applies.
         charge_efficiency: AC-to-stored-energy efficiency (0-1]. Applied in the
             SOC recursion, so the LP only cycles when the discharge price beats
             the charge price divided by the round-trip efficiency.
@@ -128,13 +158,14 @@ def mvp_cost_minimiser(
     export_prices_gbp = export_prices_pence / 100.0
 
     # Terminal salvage value: energy left in the battery at the end of the
-    # horizon is worth something (it will be used tomorrow). Default to the
-    # mean import price of the real (non-backfilled) periods so the optimiser
-    # only discharges in the tail when the export price beats the typical cost
-    # of refilling. A synthetic/backfilled tail is excluded from the average —
-    # its prices are estimated and shouldn't set the terminal floor.
+    # horizon is worth something (it will be used tomorrow). Default to a high
+    # percentile of the real import prices so the optimiser only discharges into
+    # the tail when the export price beats what that energy would cost to
+    # replace at a typical expensive hour. A synthetic/backfilled tail is
+    # excluded from the statistic — its prices are estimated and shouldn't set
+    # the terminal floor.
     if salvage_value_pence is None:
-        salvage_value_pence = _default_salvage_value_pence(inputs_df)
+        salvage_value_pence = _default_salvage_value_pence(inputs_df, salvage_percentile)
     salvage_value_gbp = salvage_value_pence / 100.0
 
     # Battery and system parameters

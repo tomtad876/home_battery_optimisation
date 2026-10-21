@@ -189,7 +189,7 @@ class TestOptimiser:
         )
 
     def test_default_salvage_excludes_synthetic_prices(self):
-        """Default salvage = mean of real prices; synthetic tail must not inflate it."""
+        """Default salvage uses real prices only; synthetic tail must not inflate it."""
         from app.core.optimiser import _default_salvage_value_pence
         inputs = self._constant_price_inputs(n=8, price=20.0)
         # Mark the last 4 periods as synthetic (backfilled) at 200p/kWh.
@@ -197,9 +197,29 @@ class TestOptimiser:
         inputs.loc[inputs["is_synthetic"], "price"] = 200.0
         assert _default_salvage_value_pence(inputs) == 20.0
 
-        # Without the flag column, the default is the mean of all prices.
+        # Without the flag column, the percentile is taken over all prices: the
+        # 85th percentile of [20,20,20,20,200,200,200,200] sits among the 200s.
         plain = inputs.drop(columns=["is_synthetic"])
-        assert _default_salvage_value_pence(plain) == 110.0  # (4*20 + 4*200)/8
+        assert _default_salvage_value_pence(plain) == 200.0
+
+    def test_default_salvage_tracks_expensive_hours_not_the_mean(self):
+        """Salvage must price stored energy at the expensive hours, not the average.
+
+        A typical Agile day: most slots cheap, a handful at 50p. The mean
+        (~29p) would let the battery export at ~26p; the 85th percentile
+        (~49p) makes holding through to the peak the better trade.
+        """
+        from app.core.optimiser import _default_salvage_value_pence
+        prices = [25.0] * 40 + [50.0] * 8
+        inputs = pd.DataFrame({"price": prices})
+
+        assert float(inputs["price"].mean()) < 30.0  # the old behaviour
+        salvage = _default_salvage_value_pence(inputs)
+        assert 45.0 < salvage < 50.0, salvage
+
+        # The percentile is tunable: 50 = median, 100 = the day's peak.
+        assert _default_salvage_value_pence(inputs, percentile=50) == 25.0
+        assert _default_salvage_value_pence(inputs, percentile=100) == 50.0
 
     def test_is_synthetic_propagates_to_result(self):
         """The synthetic flag is carried through to the optimiser output."""
