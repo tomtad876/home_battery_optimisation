@@ -7,12 +7,13 @@ from typing import Optional
 
 from app.core.auth import verify_token
 from app.core.version import build_info
-from app.core.optimiser import mvp_cost_minimiser
+from app.core.optimiser import mvp_cost_minimiser, resolve_salvage_value_pence
 from app.services.data_provider import (
     get_optimiser_inputs, get_user_site, create_site,
     create_battery, create_tariff, get_user_battery, update_battery_provider_config,
     update_battery_config, get_battery_realtime, update_site_holiday
 )
+from app.services.optimisation_runs import persist_optimisation_run, mark_run_status
 from app.services.foxess import classify_optimiser_output, _merge_groups, classify_and_push
 from app.services.event_detector import detect_events
 from app.models.demandevent import DemandEvent, DemandDayInventory
@@ -465,10 +466,16 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
     batt_discharge_kw = _resolve_battery_param(req.discharge_power_kw, battery, "max_discharge_kw")
 
     # 2. Run optimiser
+    run_id = None
     try:
         inputs = get_optimiser_inputs(str(site["id"]))
         if inputs.empty:
             raise HTTPException(status_code=400, detail="No forecast data available. Check Solcast/FoxESS credentials.")
+
+        # The salvage value drives every charge/export decision in the plan, so
+        # resolve it once and hand the same number to the optimiser and the run
+        # record — the audit trail then shows the objective that produced it.
+        salvage_pence = resolve_salvage_value_pence(inputs)
 
         schedule = mvp_cost_minimiser(
             inputs_df=inputs,
@@ -478,6 +485,24 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
             max_soc_pct=batt_max_soc,
             charge_power_kw=batt_charge_kw,
             discharge_power_kw=batt_discharge_kw,
+            salvage_value_pence=salvage_pence,
+        )
+
+        # Persist the plan (not just the push). The cost estimate covers the
+        # whole horizon; the "_real" variant excludes synthetic slots so a
+        # 90-day comparison doesn't change denominator with the price feed.
+        real_schedule = schedule
+        if "is_synthetic" in schedule.columns:
+            real_schedule = schedule[~schedule["is_synthetic"].astype(bool)]
+        run_id = persist_optimisation_run(
+            str(site["id"]),
+            schedule,
+            trigger_source="preview" if req.preview else "manual_push",
+            initial_soc_pct=soc_pct,
+            battery_capacity_kwh=batt_capacity,
+            total_cost_estimate=float(schedule["cost_gbp"].sum()),
+            total_cost_estimate_real=float(real_schedule["cost_gbp"].sum()),
+            salvage_value_pence=salvage_pence,
         )
     except HTTPException:
         raise
@@ -553,7 +578,9 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         push_error = str(e)
 
     if not pushed and not req.preview:
+        mark_run_status(run_id, "push_failed")
         raise HTTPException(status_code=502, detail=f"FoxESS push failed: {push_error}")
+    mark_run_status(run_id, "ok")
 
     # Build human-readable summary of each group (exclude the implicit
     # full-day remain-mode group — it's reported separately as remain_mode)
@@ -582,6 +609,7 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         "status": "success",
         "pushed": pushed if not req.preview else False,
         "preview": req.preview,
+        "run_id": run_id,
         "groups_sent": len(group_summaries),
         "soc_at_push": soc_pct,
         "generated_at": now.isoformat(),
@@ -624,6 +652,8 @@ def internal_optimise(req: InternalOptimiseRequest, _: dict = Depends(verify_int
     if inputs.empty:
         raise HTTPException(status_code=400, detail="No forecast data available")
 
+    salvage_pence = resolve_salvage_value_pence(inputs)
+
     schedule = mvp_cost_minimiser(
         inputs_df=inputs,
         battery_capacity_kwh=req.battery_capacity_kwh,
@@ -632,10 +662,30 @@ def internal_optimise(req: InternalOptimiseRequest, _: dict = Depends(verify_int
         max_soc_pct=req.max_soc_pct,
         charge_power_kw=req.charge_power_kw,
         discharge_power_kw=req.discharge_power_kw,
+        salvage_value_pence=salvage_pence,
+    )
+
+    # Persist the plan so the pushed schedule can be tied back to what was
+    # planned, and so plans can be scored against actuals later. The Edge
+    # Function flips `status` once it knows whether the push landed.
+    real_schedule = schedule
+    if "is_synthetic" in schedule.columns:
+        real_schedule = schedule[~schedule["is_synthetic"].astype(bool)]
+    run_id = persist_optimisation_run(
+        str(site["id"]),
+        schedule,
+        trigger_source="cron",
+        initial_soc_pct=req.initial_soc_pct,
+        battery_capacity_kwh=req.battery_capacity_kwh,
+        total_cost_estimate=float(schedule["cost_gbp"].sum()),
+        total_cost_estimate_real=float(real_schedule["cost_gbp"].sum()),
+        salvage_value_pence=salvage_pence,
     )
 
     return {
         "status": "success",
+        "run_id": run_id,
+        "salvage_value_pence": salvage_pence,
         "schedule": schedule.to_dict(orient="records"),
     }
 

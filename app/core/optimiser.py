@@ -38,6 +38,20 @@ def _default_salvage_value_pence(inputs_df: pd.DataFrame) -> float:
     return float(real_prices.mean()) if not real_prices.empty else 0.0
 
 
+def resolve_salvage_value_pence(
+    inputs_df: pd.DataFrame,
+    salvage_value_pence: float | None = None,
+) -> float:
+    """The salvage value that `mvp_cost_minimiser` will actually use.
+
+    Exposed so callers can record *why* a plan came out the way it did (the
+    value is persisted on `optimisation_runs`) without duplicating the rule.
+    """
+    if salvage_value_pence is not None:
+        return float(salvage_value_pence)
+    return _default_salvage_value_pence(inputs_df)
+
+
 def mvp_cost_minimiser(
     inputs_df: pd.DataFrame,
     battery_capacity_kwh: float = 15.0,
@@ -134,7 +148,7 @@ def mvp_cost_minimiser(
     # of refilling. A synthetic/backfilled tail is excluded from the average —
     # its prices are estimated and shouldn't set the terminal floor.
     if salvage_value_pence is None:
-        salvage_value_pence = _default_salvage_value_pence(inputs_df)
+        salvage_value_pence = resolve_salvage_value_pence(inputs_df)
     salvage_value_gbp = salvage_value_pence / 100.0
 
     # Battery and system parameters

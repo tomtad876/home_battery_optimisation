@@ -47,7 +47,7 @@ async function callBackendOptimise(
     min_soc_pct: number;
     max_soc_pct: number;
   }
-): Promise<OptimiserSlot[] | null> {
+): Promise<{ schedule: OptimiserSlot[]; runId: string | null } | null> {
   const backendUrl = Deno.env.get("BACKEND_URL");
   const internalKey = Deno.env.get("INTERNAL_API_KEY");
   if (!backendUrl || !internalKey) {
@@ -79,7 +79,12 @@ async function callBackendOptimise(
   }
 
   const data = await resp.json();
-  return data?.schedule || null;
+  const schedule = (data?.schedule || null) as OptimiserSlot[] | null;
+  if (!schedule) return null;
+  // The backend persists the plan and returns its id, so the audit row can
+  // point at the exact plan it was built from instead of guessing "latest".
+  const runId = (data?.run_id || null) as string | null;
+  return { schedule, runId };
 }
 
 async function notify(summary: { success: boolean; processed: number; total: number; errors: string[] }) {
@@ -222,13 +227,15 @@ serve(async (req: Request) => {
         const deviceInfo = await getDeviceScheduleInfo(foxessKey, deviceSn);
 
         // 3. Call backend optimiser
-        const schedule = await callBackendOptimise(site.user_id, socPct, {
+        const optimiseResult = await callBackendOptimise(site.user_id, socPct, {
           capacity_kwh: battery.capacity_kwh,
           max_charge_kw: battery.max_charge_kw,
           max_discharge_kw: battery.max_discharge_kw,
           min_soc_pct: battery.min_soc_pct,
           max_soc_pct: battery.max_soc_pct,
         });
+        const schedule = optimiseResult?.schedule ?? null;
+        const runId = optimiseResult?.runId ?? null;
 
         if (!schedule || schedule.length === 0) {
           errors.push(`Battery ${battery.id}: optimiser returned no schedule`);
@@ -247,6 +254,7 @@ serve(async (req: Request) => {
           const msg = `Battery ${battery.id}: no published-price slots in the horizon — skipping synthetic plan`;
           errors.push(msg);
           await client.from("schedules").insert({
+            optimisation_run_id: runId,
             status: "failed",
             pushed_at: now.toISOString(),
             trigger_source: "cron",
@@ -254,6 +262,9 @@ serve(async (req: Request) => {
             error_message: msg,
             foxess_groups: [],
           });
+          if (runId) {
+            await client.from("optimisation_runs").update({ status: "skipped_no_prices" }).eq("id", runId);
+          }
           continue;
         }
 
@@ -292,17 +303,22 @@ serve(async (req: Request) => {
         }
 
         // 6. Log to schedules table — audit the groups actually sent, not the
-        // pre-merge/pre-split classifier output.
-        const { data: lastRun } = await client
-          .from("optimisation_runs")
-          .select("id")
-          .eq("site_id", battery.site_id)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .single();
+        // pre-merge/pre-split classifier output. Prefer the run id the backend
+        // handed back; fall back to the latest run for older backends.
+        let lastRun: { id: string } | null = null;
+        if (!runId) {
+          const { data } = await client
+            .from("optimisation_runs")
+            .select("id")
+            .eq("site_id", battery.site_id)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .single();
+          lastRun = data ?? null;
+        }
 
         const { error: auditError } = await client.from("schedules").insert({
-          optimisation_run_id: lastRun?.id || null,
+          optimisation_run_id: runId || lastRun?.id || null,
           status: pushed ? "sent" : "failed",
           pushed_at: now.toISOString(),
           foxess_groups: finalGroups,
@@ -315,6 +331,18 @@ serve(async (req: Request) => {
           // Don't swallow this — a missing audit row is how the schedules table
           // silently stayed empty. Surface it on the run (and the heartbeat).
           errors.push(`Battery ${battery.id}: audit insert failed: ${auditError.message}`);
+        }
+
+        // Close the loop on the run the backend persisted: "pending" means the
+        // push path died before reporting back.
+        if (runId) {
+          const { error: statusError } = await client
+            .from("optimisation_runs")
+            .update({ status: pushed ? "ok" : "push_failed" })
+            .eq("id", runId);
+          if (statusError) {
+            errors.push(`Battery ${battery.id}: run status update failed: ${statusError.message}`);
+          }
         }
 
         if (pushed) {

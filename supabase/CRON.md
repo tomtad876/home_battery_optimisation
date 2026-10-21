@@ -16,6 +16,7 @@ BST = UTC+1 (late March → late October).
 | `schedule_heat_pump` | 9 | `*/15 * * * *` | every 15 min | `fetch-heatpump` |
 | `schedule_optimise_and_push` | — | `*/30 * * * *` (06:30–22:50 London guard) | every 30 min, waking hours | `optimise-and-push` |
 | `keep_backend_warm` | — | `*/10 5-22 * * *` | 06:20–22:55 (London guard) | Render `/health` |
+| `prune_optimisation_runs` | — | `30 3 * * *` | 03:30 | retention (90 days) |
 
 Job ids are assigned by `cron.schedule` and are only indicative here. There is
 deliberately **no** separate afternoon job — the 16:30 local run lives on the
@@ -101,8 +102,23 @@ supported but are unset. Runs are also audited in the `schedules` table.
 
 Apply / revert: [`cron/optimise_and_push.sql`](cron/optimise_and_push.sql).
 
-## Gotchas
+## Why `prune_optimisation_runs` (added 2026-10-21)
 
+Persisting optimiser runs (the plan for every half-hour, not just the pushed
+schedule) costs ~96 interval rows per run. The auto-push cron runs every 30
+minutes through waking hours, so one site writes ~3.2k rows/day — trivial for
+Postgres, but unbounded growth for data whose value is recent comparison.
+
+Keep **90 days** and prune every run, including ones that were pushed. The
+`optimisation_intervals` FK cascades, so a run's 96 interval rows go with it;
+`schedules.optimisation_run_id` is `ON DELETE SET NULL`, so the push audit row
+(the groups actually sent) survives with a null link. Keeping runs that had a
+schedule — as an earlier draft did — would have kept *every* run forever, since
+every cron run is pushed.
+
+Apply / revert: [`cron/prune_optimisation_runs.sql`](cron/prune_optimisation_runs.sql).
+
+## Gotchas
 - **`succeeded` in `cron.job_run_details` is meaningless.** The jobs call
   `net.http_post`, which is fire-and-forget — the job logs success regardless
   of what the Edge Function returned. This is the silent-failure mode behind
