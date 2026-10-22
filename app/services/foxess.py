@@ -272,6 +272,14 @@ def classify_optimiser_output(
             end_utc = min(end_utc, window_end)
         if end_utc <= start_utc:
             continue
+        # Drop boundary slivers. A slot whose start falls exactly at the window
+        # end (now + max_hours) is clipped to a near-zero-length group; on the
+        # daily-recurring FoxESS schedule that clock time fires TODAY, not on the
+        # day the optimiser meant, and `split_groups_at_midnight` then turns the
+        # zero-length group into a corrupt all-day pair (22:00-23:59 / 00:00-22:00).
+        # A real instruction is never sub-minute — this is always an artifact.
+        if (end_utc - start_utc).total_seconds() < 60:
+            continue
 
         start_local = start_utc.to_pydatetime().astimezone(tz)
         end_local = end_utc.to_pydatetime().astimezone(tz)
@@ -432,7 +440,7 @@ def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
     for g in groups:
         start_m = g["startHour"] * 60 + g["startMinute"]
         end_m = g["endHour"] * 60 + g["endMinute"]
-        if end_m <= start_m:
+        if end_m < start_m:
             # Spans midnight: split at 23:59 of the first day / 00:00 of the next
             first = {**g, "endHour": 23, "endMinute": 59}
             second = {**g, "startHour": 0, "startMinute": 0}
