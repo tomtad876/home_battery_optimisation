@@ -1,4 +1,13 @@
 """Pytest configuration and shared fixtures."""
+import os
+
+# The app imports build a SQLAlchemy engine from DATABASE_URL at import time.
+# The engine is lazy — no connection is made unless a test actually queries —
+# and the unit suite mocks all DB access, so a placeholder is enough to let the
+# suite run without a real .env (Surface / CI / a fresh checkout). A real
+# DATABASE_URL in the environment still wins (setdefault).
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
+
 import pytest
 import pandas as pd
 from datetime import datetime, timedelta
