@@ -198,6 +198,10 @@ export function classifySchedule(
     if (windowStartMs !== null) startMs = Math.max(startMs, windowStartMs);
     if (windowEndMs !== null) endMs = Math.min(endMs, windowEndMs);
     if (endMs <= startMs) continue;
+    // Drop boundary slivers (see the Python classifier): a slot clipped to a
+    // sub-minute group at the window end fires TODAY on the daily-recurring
+    // schedule, not the day the optimiser meant. Real instructions are >= 30min.
+    if (endMs - startMs < 60_000) continue;
 
     // Duration of the CLIPPED group (a group clipped at its start has less time
     // to move the scheduled energy, so power must be sized up).
@@ -321,7 +325,7 @@ export function splitGroupsAtMidnight(groups: FoxESSGroup[]): FoxESSGroup[] {
   for (const g of groups) {
     const startM = g.startHour * 60 + g.startMinute;
     const endM = g.endHour * 60 + g.endMinute;
-    if (endM <= startM) {
+    if (endM < startM) {
       out.push({ ...g, endHour: 23, endMinute: 59 });
       out.push({ ...g, startHour: 0, startMinute: 0 });
     } else {
