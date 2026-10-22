@@ -38,6 +38,54 @@ def _default_salvage_value_pence(inputs_df: pd.DataFrame) -> float:
     return float(real_prices.mean()) if not real_prices.empty else 0.0
 
 
+# Price-aware reserve floor. A fixed 20% reserve is ~1 kWh ≈ 30-40 min of
+# evening load — no protection on a 50p+ evening. These constants raise the SOC
+# floor as the peak of the next 24h of published prices rises. Kept as module
+# constants so the behaviour is tunable (and reversible) in one place.
+DEFAULT_RESERVE_BASE_PCT = 20.0
+DEFAULT_RESERVE_PEAK_REF_PENCE = 30.0
+DEFAULT_RESERVE_SLOPE_PCT_PER_PENCE = 1.5
+DEFAULT_RESERVE_MIN_PCT = 20.0
+DEFAULT_RESERVE_MAX_PCT = 80.0
+
+
+def resolve_reserve_floor_pct(
+    inputs_df: pd.DataFrame,
+    *,
+    base_pct: float = DEFAULT_RESERVE_BASE_PCT,
+    peak_ref_pence: float = DEFAULT_RESERVE_PEAK_REF_PENCE,
+    slope_pct_per_pence: float = DEFAULT_RESERVE_SLOPE_PCT_PER_PENCE,
+    min_pct: float = DEFAULT_RESERVE_MIN_PCT,
+    max_pct: float = DEFAULT_RESERVE_MAX_PCT,
+) -> float:
+    """Price-aware reserve floor: hold more before an expensive peak.
+
+    The reserve is the SOC the battery is not allowed to discharge below. A fixed
+    floor is blind to tomorrow's cost, so on a 55p evening the battery sells its
+    "reserve" into the peak for the export price and buys back dear. This raises
+    the floor with the peak of the next 24h of *published* prices:
+
+        floor = clamp(base + slope * (peak_next_24h_pence - peak_ref), min, max)
+
+    With the defaults a 30p peak keeps 20%, a 55p peak holds ~57%, and anything
+    above ~70p holds the 80% cap.
+
+    Only the next 24h (not the full 48h horizon) so a distant peak doesn't
+    over-reserve every day, and only real (non-synthetic) prices so a backfilled
+    "typical day" tail can't set the floor.
+    """
+    prices = inputs_df["price"].copy()
+    if "is_synthetic" in inputs_df.columns:
+        prices = prices.where(~inputs_df["is_synthetic"].astype(bool))
+    # Next 24h = first 48 half-hour slots of the (period_end-sorted) horizon.
+    first_24h = prices.iloc[:48].dropna()
+    if first_24h.empty:
+        return min_pct
+    peak_pence = float(first_24h.max())
+    floor = base_pct + slope_pct_per_pence * (peak_pence - peak_ref_pence)
+    return float(min(max_pct, max(min_pct, floor)))
+
+
 def resolve_salvage_value_pence(
     inputs_df: pd.DataFrame,
     salvage_value_pence: float | None = None,
@@ -65,6 +113,7 @@ def mvp_cost_minimiser(
     discharge_efficiency: float = DEFAULT_DISCHARGE_EFFICIENCY,
     grid_limit_kw: float = DEFAULT_GRID_LIMIT_KW,
     dt_hours: float = 0.5,
+    reserve_floor_pct: float | None = None,
 ) -> pd.DataFrame:
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.
@@ -77,6 +126,9 @@ def mvp_cost_minimiser(
         battery_capacity_kwh: Total battery capacity
         initial_soc_pct: Starting state of charge %
         min_soc_pct, max_soc_pct: Bounds on SOC
+        reserve_floor_pct: Price-aware reserve floor (see resolve_reserve_floor_pct).
+            The effective minimum SOC is max(min_soc_pct, reserve_floor_pct). When
+            None, it is derived from the next-24h peak of the input prices.
         charge_power_kw: Max charge power (kW)
         discharge_power_kw: Max discharge power (kW)
         salvage_value_pence: Value (pence/kWh) of energy left in the battery at
@@ -151,6 +203,14 @@ def mvp_cost_minimiser(
         salvage_value_pence = resolve_salvage_value_pence(inputs_df)
     salvage_value_gbp = salvage_value_pence / 100.0
 
+    # Price-aware reserve floor: the SOC the battery may not discharge below.
+    # Raises the fixed min_soc_pct as the next-24h peak rises, so the battery
+    # holds energy for an expensive evening instead of selling its reserve into
+    # it. Never below the configured min, never above the configured max.
+    if reserve_floor_pct is None:
+        reserve_floor_pct = resolve_reserve_floor_pct(inputs_df)
+    effective_min_soc_pct = max(min_soc_pct, min(reserve_floor_pct, max_soc_pct))
+
     # Battery and system parameters
     dt = dt_hours
     eta_c = charge_efficiency
@@ -158,7 +218,7 @@ def mvp_cost_minimiser(
     max_batt_charge_energy = charge_power_kw * dt
     max_batt_discharge_energy = discharge_power_kw * dt
     max_grid_energy = grid_limit_kw * dt
-    soc_min_kwh = (min_soc_pct / 100.0) * battery_capacity_kwh
+    soc_min_kwh = (effective_min_soc_pct / 100.0) * battery_capacity_kwh
     soc_max_kwh = (max_soc_pct / 100.0) * battery_capacity_kwh
     init_soc_kwh = (initial_soc_pct / 100.0) * battery_capacity_kwh
 

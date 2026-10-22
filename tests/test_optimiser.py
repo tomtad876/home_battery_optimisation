@@ -253,6 +253,7 @@ class TestRoundTripEfficiency:
             charge_power_kw=10.0,
             discharge_power_kw=10.0,
             salvage_value_pence=29.0,
+            reserve_floor_pct=20.0,  # pin the reserve: these isolate efficiency
         )
         params.update(overrides)
         return params
