@@ -38,6 +38,50 @@ def _default_salvage_value_pence(inputs_df: pd.DataFrame) -> float:
     return float(real_prices.mean()) if not real_prices.empty else 0.0
 
 
+def resolve_value_curve(
+    inputs_df: pd.DataFrame,
+    capacity_kwh: float,
+    segments: int = 5,
+    high_percentile: float = 90.0,
+    low_percentile: float = 10.0,
+    high_pence: float | None = None,
+    low_pence: float | None = None,
+) -> tuple[float, list[float]]:
+    """Marginal value of terminal stored energy as a decreasing curve.
+
+    A flat salvage says every stored kWh is worth the same. The reservoir
+    intuition is better: the last few kWh before empty are precious (they buy you
+    out of a spike), the last few before full are cheap (you would export them).
+    So the terminal value is concave — marginal value falls as SOC rises.
+
+    Returns ``(segment_width_kwh, slopes_pence)`` with strictly decreasing
+    slopes. The LP fills the highest-value segment first, so the value of ``soc``
+    kWh is the sum of the top segments up to ``soc`` — a piecewise-linear concave
+    function, which keeps the problem linear.
+
+    The top/bottom slopes are ``high_pence``/``low_pence`` when supplied (the app
+    passes a trailing price distribution — the *regime*, not just this horizon);
+    otherwise they are the P90 import / P10 export of this horizon.
+    """
+    real = inputs_df
+    if "is_synthetic" in inputs_df.columns:
+        real = inputs_df.loc[~inputs_df["is_synthetic"].astype(bool)]
+    imp = real["price"].dropna()
+    exp = real["export_price"].dropna()
+    if segments < 1 or (imp.empty and high_pence is None):
+        return capacity_kwh, [0.0]
+    high = float(high_pence) if high_pence is not None else float(np.percentile(imp, high_percentile))
+    if low_pence is not None:
+        low = float(low_pence)
+    elif not exp.empty:
+        low = float(np.percentile(exp, low_percentile))
+    else:
+        low = high * 0.3
+    low = min(low, high)
+    slopes = list(np.linspace(high, low, segments))
+    return capacity_kwh / segments, slopes
+
+
 def resolve_salvage_value_pence(
     inputs_df: pd.DataFrame,
     salvage_value_pence: float | None = None,
@@ -65,6 +109,9 @@ def mvp_cost_minimiser(
     discharge_efficiency: float = DEFAULT_DISCHARGE_EFFICIENCY,
     grid_limit_kw: float = DEFAULT_GRID_LIMIT_KW,
     dt_hours: float = 0.5,
+    value_curve_segments: int | None = None,
+    value_curve_high_pence: float | None = None,
+    value_curve_low_pence: float | None = None,
 ) -> pd.DataFrame:
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.
@@ -92,6 +139,9 @@ def mvp_cost_minimiser(
             separate from battery power so a demand spike above the battery
             rating stays feasible.
         dt_hours: Length of one interval in hours (default 0.5 = half-hour).
+        value_curve_segments: When set, replace the flat terminal salvage with a
+            concave value curve of this many segments (see resolve_value_curve).
+            None keeps the flat salvage.
 
     Returns:
         DataFrame with columns: period_end, demand, pv_estimate, price, batt_charge_kwh,
@@ -219,9 +269,26 @@ def mvp_cost_minimiser(
     # the term paid the battery to charge even when that energy was never used,
     # which subsidised lossy cycling.
 
-    # Terminal salvage: reward energy left in the battery at the horizon end so
-    # the optimiser doesn't dump it to the grid for less than its replacement cost.
-    cost = cost - salvage_value_gbp * soc[n - 1]
+    # Terminal value of stored energy. Either the flat salvage (~the mean price)
+    # or, when `value_curve_segments` is set, a concave piecewise-linear curve so
+    # the last kWh before empty is worth more than the last kWh before full.
+    if value_curve_segments:
+        seg_width, seg_slopes = resolve_value_curve(
+            inputs_df,
+            battery_capacity_kwh,
+            value_curve_segments,
+            high_pence=value_curve_high_pence,
+            low_pence=value_curve_low_pence,
+        )
+        z_term = cp.Variable(len(seg_slopes), nonneg=True)
+        constraints.append(cp.sum(z_term) == soc[n - 1])
+        constraints.append(z_term <= seg_width)
+        terminal_value = cp.sum(cp.multiply(z_term, np.asarray(seg_slopes) / 100.0))
+    else:
+        # Flat salvage: reward energy left in the battery at the horizon end so
+        # the optimiser doesn't dump it for less than its replacement cost.
+        terminal_value = salvage_value_gbp * soc[n - 1]
+    cost = cost - terminal_value
 
     problem = cp.Problem(cp.Minimize(cost), constraints)
     # Pin the solver and accept a slightly inaccurate optimum; the default
