@@ -445,6 +445,30 @@ def push_schedule_to_device(
     return {"pushed": False, "errno": None, "msg": "push failed after retries"}
 
 
+def get_max_schedule_groups(default: int = 8) -> int:
+    """The device's max schedule periods, tolerating a foxesscloud metadata bug.
+
+    ``foxesscloud.openapi.get_flag()`` parses ``properties.workmode`` and does a
+    bare ``modes["enumList"]`` (older builds: ``"enumlist"``). On Tom's inverter
+    the API returns ``workmode`` without that key, so the first call in a fresh
+    process raises KeyError — and because the library has already cached
+    ``maxGroupCount`` by then, the *next* call short-circuits and succeeds. That
+    is why a Preview fails once after every deploy/cold start and then works
+    (Sentry `HTTPException /optimise/push: Preview failed: 'enumlist'`,
+    2026-10-24 23:15 BST).
+
+    The flag call is only used for the group cap, so a metadata failure must not
+    fail the request: fall back to ``default`` (8 is the FoxESS maximum anyway).
+    """
+    try:
+        f.get_flag()
+    except Exception:
+        # Same partial-failure state the library leaves itself in: anything it
+        # did cache before raising is still readable.
+        pass
+    return int(getattr(f, "max_periods", None) or default)
+
+
 def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
     """Split any group that spans midnight into two groups (one per day).
 
@@ -606,12 +630,9 @@ def classify_and_push(
         init_api(api_key)
         f.device_sn = device_sn
 
-        # Get device schedule info (maxGroupCount, supported modes)
-        info = f.get_flag()
-        if info is None:
-            return {"pushed": False, "groups_sent": 0, "provider_response": None, "error": "Failed to get device schedule info"}
-
-        max_groups = f.max_periods or 8
+        # Device schedule info (maxGroupCount). Metadata failures must not
+        # abort a push — see get_max_schedule_groups().
+        max_groups = get_max_schedule_groups()
 
         # Classify
         groups = classify_optimiser_output(

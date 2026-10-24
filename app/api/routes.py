@@ -519,14 +519,14 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         from app.services.foxess import (
             init_api as _init_api,
             get_device_remain_mode,
+            get_max_schedule_groups,
             split_groups_at_midnight,
         )
         import foxesscloud.openapi as _f
 
         _init_api(foxess_key)
         _f.device_sn = device_sn
-        info = _f.get_flag()
-        max_groups = _f.max_periods or 8
+        max_groups = get_max_schedule_groups()
 
         groups = classify_optimiser_output(
             result_df=schedule,
