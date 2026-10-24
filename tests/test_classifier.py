@@ -440,3 +440,41 @@ class TestDstFallBack:
         )
         for g in groups:
             assert (g["startHour"], g["startMinute"]) != (g["endHour"], g["endMinute"])
+
+
+class TestDeviceMetadata:
+    """get_flag() must not be able to fail a Preview (Sentry, 2026-10-24).
+
+    The vendored foxesscloud parses properties.workmode with a bare
+    modes["enumList"] (older builds "enumlist"). Tom's inverter returns
+    workmode without that key, so the FIRST get_flag() in a fresh process
+    raises KeyError — after it has already cached maxGroupCount — and the next
+    call succeeds. That produced a Preview failure once after every deploy.
+    """
+
+    def test_keyerror_falls_back_to_the_default(self, monkeypatch):
+        import app.services.foxess as svc
+
+        def _boom():
+            raise KeyError("enumlist")
+
+        monkeypatch.setattr(svc.f, "get_flag", _boom)
+        monkeypatch.setattr(svc.f, "max_periods", None, raising=False)
+        assert svc.get_max_schedule_groups() == 8
+
+    def test_uses_max_periods_cached_before_the_raise(self, monkeypatch):
+        import app.services.foxess as svc
+
+        def _boom():
+            raise KeyError("enumlist")
+
+        monkeypatch.setattr(svc.f, "get_flag", _boom)
+        monkeypatch.setattr(svc.f, "max_periods", 4, raising=False)
+        assert svc.get_max_schedule_groups() == 4
+
+    def test_happy_path_returns_the_device_cap(self, monkeypatch):
+        import app.services.foxess as svc
+
+        monkeypatch.setattr(svc.f, "get_flag", lambda: {"maxGroupCount": 6})
+        monkeypatch.setattr(svc.f, "max_periods", 6, raising=False)
+        assert svc.get_max_schedule_groups() == 6
