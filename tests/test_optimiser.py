@@ -253,6 +253,9 @@ class TestRoundTripEfficiency:
             charge_power_kw=10.0,
             discharge_power_kw=10.0,
             salvage_value_pence=29.0,
+            # Isolate the efficiency mechanism; battery wear is priced (and
+            # tested) separately in TestThroughputCost.
+            throughput_cost_pence_per_kwh=0.0,
         )
         params.update(overrides)
         return params
@@ -387,3 +390,327 @@ class TestRobustness:
         })
         with pytest.raises(ValueError, match="efficiency"):
             mvp_cost_minimiser(inputs_df=inputs, charge_efficiency=1.5)
+
+
+class TestNetGridFlows:
+    """Regression: the LP used to trade with itself across the meter.
+
+    Import and export were priced independently, so whenever the export price
+    beat the import price — which is what Agile looks like at low and negative
+    prices — the optimiser imported 7.5 kWh and exported 7.5 kWh in the *same*
+    half-hour and booked the spread as profit. On a real 96-slot plan (run
+    `ab9b5ed3`, 2026-10-24) that was 294 kWh of phantom flow and ~£12 of
+    phantom revenue, and because the phantom trade out-earned every battery
+    action the plan sat on the 20% SOC floor right through a −7.5p window
+    instead of filling up.
+
+    A meter settles net: one direction per half-hour. That needs a binary in the
+    slots where the spread inverts, so those solves are small MILPs (HiGHS).
+
+    NB: `grid_import_kwh`/`grid_export_kwh` in the result are *netted* for
+    display, and netting preserves (import − export), so the energy-balance
+    assertions in this file cannot see simultaneous gross flows.
+    `test_reported_cost_matches_a_net_settled_meter` is the pin for the phantom
+    trade — don't simplify it away.
+    """
+
+    def _inputs(self, prices, export_prices, demand=0.15, solar=None, start="2026-10-25 00:00"):
+        n = len(prices)
+        if solar is None:
+            solar = [0.0] * n
+        if not isinstance(demand, (list, tuple)):
+            demand = [demand] * n
+        return pd.DataFrame({
+            "period_end": pd.date_range(start, periods=n, freq="30min", tz="UTC"),
+            "price": prices,
+            "export_price": export_prices,
+            "demand": demand,
+            "pv_estimate": solar,
+        })
+
+    def _params(self, **overrides):
+        params = dict(
+            battery_capacity_kwh=5.0,
+            initial_soc_pct=21.0,
+            min_soc_pct=20.0,
+            max_soc_pct=100.0,
+            charge_power_kw=3.0,
+            discharge_power_kw=3.0,
+        )
+        params.update(overrides)
+        return params
+
+    def _physical_cost(self, result):
+        """What the same flows would actually cost at a net-settled meter."""
+        net = result["grid_import_kwh"] - result["grid_export_kwh"]
+        return np.where(
+            net > 0,
+            net * result["price"] / 100.0,
+            net * result["export_price_pence"] / 100.0,
+        ).sum()
+
+    def test_reported_cost_matches_a_net_settled_meter(self):
+        """The headline cost must be the cost of the net flows, not gross trades."""
+        # The shape of the failed 2026-10-24 plan: export above import
+        # throughout, with a deeply negative block where the phantom trade paid
+        # best. Before the fix the live plan reported -£12.77 where its net
+        # flows actually cost -£0.69.
+        inputs = self._inputs(
+            prices=[6.29, 2.01, 0.48, -0.94, -7.54, -6.28, -4.14, 30.0, 32.0, 31.0],
+            export_prices=[5.08, 3.17, 1.11, 1.36, 1.60, 1.60, 1.51, 15.0, 16.0, 15.5],
+        )
+        result = mvp_cost_minimiser(inputs_df=inputs, salvage_value_pence=10.0, **self._params())
+
+        assert result["cost_gbp"].sum() == pytest.approx(self._physical_cost(result), abs=1e-6)
+
+    def test_no_flows_at_all_when_there_is_nothing_to_trade(self):
+        """Flat 0.48p import / 1.11p export, no load, no solar, frozen battery.
+
+        Before the fix this "earned" (1.11 - 0.48) x 7.5p per half-hour from
+        importing and exporting the same energy. The battery is pinned so the
+        only trade available is the phantom one.
+        """
+        inputs = self._inputs(prices=[0.48] * 6, export_prices=[1.11] * 6, demand=0.0)
+        result = mvp_cost_minimiser(
+            inputs_df=inputs,
+            salvage_value_pence=10.0,
+            **self._params(initial_soc_pct=20.0, min_soc_pct=20.0, max_soc_pct=20.0),
+        )
+
+        assert result["grid_import_kwh"].abs().max() < 1e-6
+        assert result["grid_export_kwh"].abs().max() < 1e-6
+        assert result["cost_gbp"].sum() == pytest.approx(0.0, abs=1e-6)
+
+    def test_battery_buys_in_the_negative_block(self):
+        """The actual complaint: it should charge when it is paid to import."""
+        inputs = self._inputs(
+            prices=[6.0, 2.0, 0.5, -1.0, -3.0, -7.5, -6.0, -2.0, 30.0, 32.0],
+            export_prices=[3.0, 1.2, 1.1, 1.3, 1.4, 1.5, 1.5, 1.5, 15.0, 16.0],
+        )
+        result = mvp_cost_minimiser(inputs_df=inputs, salvage_value_pence=20.0, **self._params())
+
+        negative = result["price"] < 0
+        charged = result["batt_charge_kwh"].sum()
+        assert charged > 1.0, f"expected a real charge, got {charged:.2f} kWh"
+        assert result.loc[negative, "batt_charge_kwh"].sum() >= 0.9 * charged, (
+            "the battery should do its buying inside the negative-price block, "
+            f"got {result.loc[negative, 'batt_charge_kwh'].sum():.2f} of {charged:.2f} kWh"
+        )
+
+        # And the energy must still be there for the evening, not sold off cheap.
+        assert result["soc_kwh"].iloc[-1] > result["soc_kwh"].iloc[0] - 1e-6
+
+    def test_solar_spill_never_exceeds_available_solar(self):
+        """Spill is curtailment, not a free sink for imported energy."""
+        inputs = self._inputs(
+            prices=[-5.0] * 6,
+            export_prices=[1.0] * 6,
+            demand=0.2,
+            solar=[0.0, 0.0, 2.0, 2.0, 2.0, 0.0],
+        )
+        result = mvp_cost_minimiser(
+            inputs_df=inputs,
+            salvage_value_pence=10.0,
+            grid_limit_kw=1.0,      # export capped at 0.5 kWh per half hour
+            **self._params(initial_soc_pct=100.0),
+        )
+
+        assert (result["solar_spill_kwh"] >= -1e-9).all()
+        assert (result["solar_spill_kwh"] <= result["pv_estimate"] + 1e-6).all()
+        # With export capped and the battery full, some solar really must spill.
+        assert result["solar_spill_kwh"].sum() > 1.0
+
+    def test_energy_balance_holds_through_the_inverted_spread(self):
+        """The new spray of constraints must not break the physical balance."""
+        inputs = self._inputs(
+            prices=[0.5, -1.0, -7.5, 4.0, 30.0, 31.0],
+            export_prices=[1.1, 1.4, 1.6, 1.6, 15.0, 16.0],
+            demand=[0.2, 0.1, 0.1, 0.4, 0.5, 0.5],
+            solar=[0.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        )
+        result = mvp_cost_minimiser(inputs_df=inputs, salvage_value_pence=15.0, **self._params())
+
+        lhs = (
+            result["pv_estimate"]
+            + result["batt_discharge_kwh"]
+            + result["grid_import_kwh"]
+            - result["solar_spill_kwh"]
+        )
+        rhs = result["demand"] + result["batt_charge_kwh"] + result["grid_export_kwh"]
+        np.testing.assert_allclose(lhs, rhs, rtol=1e-5, atol=1e-6)
+        assert (result["soc_kwh"] >= 1.0 - 1e-6).all()   # 20% of 5 kWh
+        assert (result["soc_kwh"] <= 5.0 + 1e-6).all()
+
+
+class TestThroughputCost:
+    """Battery wear is a cost: the LP must stop cycling for sub-penny edges.
+
+    Added after the 2026-10-24 meter-netting fix exposed the real arbitrage
+    underneath it: inside a long negative-price block the LP buys at -7.5p and
+    exports at +1.5p over and over — six cycles of a 5 kWh battery in 48h for
+    about £1 of cash. At ~£450/kWh installed over a 6,000-cycle life a full
+    cycle costs ~37p, so those cycles were destroying more value than they
+    made. Throughput is now priced at DEFAULT_THROUGHPUT_COST_PENCE_PER_KWH.
+    """
+
+    def _cycle_inputs(self, export_pence):
+        """Sell 1 kWh into period 0, buy it back at 27.9p in period 1."""
+        return pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=2, freq="30min", tz="UTC"),
+            "pv_estimate": [0.0, 0.0],
+            "price": [100.0, 27.9],
+            "export_price": [export_pence, 1.0],
+            "demand": [0.0, 0.0],
+        })
+
+    def _params(self, **overrides):
+        params = dict(
+            battery_capacity_kwh=10.0,
+            initial_soc_pct=50.0,
+            min_soc_pct=20.0,
+            max_soc_pct=50.0,   # can't stockpile above the start
+            charge_power_kw=10.0,
+            discharge_power_kw=10.0,
+            salvage_value_pence=29.0,
+        )
+        params.update(overrides)
+        return params
+
+    def test_a_thin_spread_clears_efficiency_but_not_wear(self):
+        """33p vs 27.9p covers the round-trip loss (~30.9p) but only just.
+
+        Without a wear price the cycle is worth ~2p; with wear at 4p/kWh it
+        costs ~8.4p of battery life for 1 kWh exported, so it must not happen.
+        """
+        lossless = mvp_cost_minimiser(
+            inputs_df=self._cycle_inputs(33.0),
+            **self._params(throughput_cost_pence_per_kwh=0.0),
+        )
+        assert lossless["batt_discharge_kwh"].sum() > 0.5, "sanity: this spread does clear efficiency"
+
+        priced = mvp_cost_minimiser(inputs_df=self._cycle_inputs(33.0), **self._params())
+        assert priced["batt_discharge_kwh"].sum() < 1e-6, (
+            "a 2p edge must not buy 8p of battery wear, discharged "
+            f"{priced['batt_discharge_kwh'].sum():.2f} kWh"
+        )
+
+    def test_a_wide_spread_still_cycles(self):
+        """60p vs 27.9p clears both the losses (~30.9p) and the wear (~8.4p)."""
+        result = mvp_cost_minimiser(inputs_df=self._cycle_inputs(60.0), **self._params())
+        assert result["batt_discharge_kwh"].sum() > 0.5
+
+    def test_reported_cost_stays_cash_not_wear(self):
+        """Wear is a shadow cost on the schedule; the cost column must stay cash."""
+        result = mvp_cost_minimiser(inputs_df=self._cycle_inputs(60.0), **self._params())
+        net = result["grid_import_kwh"] - result["grid_export_kwh"]
+        cash = np.where(
+            net > 0,
+            net * result["price"] / 100.0,
+            net * result["export_price_pence"] / 100.0,
+        ).sum()
+        assert result["cost_gbp"].sum() == pytest.approx(cash, abs=1e-6)
+
+    def test_negative_throughput_cost_raises(self):
+        with pytest.raises(ValueError, match="throughput_cost"):
+            mvp_cost_minimiser(
+                inputs_df=self._cycle_inputs(60.0),
+                throughput_cost_pence_per_kwh=-1.0,
+            )
+
+    def test_wear_tames_a_negative_price_block(self):
+        """The live-pathology shape: 8h of negative prices, export positive.
+
+        Free throughput churns the battery; priced throughput leaves the useful
+        cycle (fill once, hold for the evening) and drops the rest.
+        """
+        n = 16
+        prices = [-7.0, -5.0, -3.0] * 5 + [-1.0]
+        inputs = pd.DataFrame({
+            "period_end": pd.date_range("2026-10-25 00:00", periods=n, freq="30min", tz="UTC"),
+            "price": prices,
+            "export_price": [1.5] * n,
+            "demand": [0.1] * n,
+            "pv_estimate": [0.0] * n,
+        })
+
+        free = mvp_cost_minimiser(
+            inputs_df=inputs,
+            **self._params(salvage_value_pence=20.0, throughput_cost_pence_per_kwh=0.0),
+        )
+        priced = mvp_cost_minimiser(
+            inputs_df=inputs, **self._params(salvage_value_pence=20.0)
+        )
+
+        assert priced["batt_discharge_kwh"].sum() < free["batt_discharge_kwh"].sum() * 0.8
+        # It must still fill up — the energy is needed later, not the point of
+        # the trade — and the cash should barely move.
+        assert priced["soc_kwh"].max() > 3.0
+        assert priced["cost_gbp"].sum() <= 0.0
+
+
+class TestGridDataQuality:
+    """Edge cases the 2026-10-24 netting review asked to pin."""
+
+    def _params(self, **overrides):
+        params = dict(
+            battery_capacity_kwh=10.0,
+            initial_soc_pct=20.0,
+            min_soc_pct=20.0,
+            max_soc_pct=100.0,
+            charge_power_kw=3.0,
+            discharge_power_kw=3.0,
+            salvage_value_pence=20.0,
+        )
+        params.update(overrides)
+        return params
+
+    def test_demand_spike_inside_an_inverted_slot_still_imports(self):
+        """A kettle in a slot where export > import must not force an export.
+
+        The either/or binary must not cap import below the household's own
+        demand — this is the case the big-M bound has to get right.
+        """
+        inputs = pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=2, freq="30min", tz="UTC"),
+            "pv_estimate": [0.0, 0.0],
+            "price": [0.5, 0.5],          # import...
+            "export_price": [1.1, 1.1],   # ...but export pays more
+            "demand": [4.0, 0.5],         # kettle, and the battery is at min SOC
+        })
+        result = mvp_cost_minimiser(inputs_df=inputs, **self._params())
+
+        assert result["grid_import_kwh"].iloc[0] >= 3.9
+        assert result["grid_export_kwh"].iloc[0] < 1e-6
+
+    def test_negative_solar_estimate_stays_feasible(self):
+        """A negative pv_estimate is nonsense, but it must not make the MILP infeasible."""
+        inputs = pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=2, freq="30min", tz="UTC"),
+            "pv_estimate": [-1.0, 0.0],
+            "price": [0.5, 0.5],
+            "export_price": [1.1, 1.1],
+            "demand": [0.1, 0.1],
+        })
+        result = mvp_cost_minimiser(
+            inputs_df=inputs, **self._params(initial_soc_pct=10.0)  # below min → forced charging
+        )
+        lhs = (
+            result["pv_estimate"] + result["batt_discharge_kwh"]
+            + result["grid_import_kwh"] - result["solar_spill_kwh"]
+        )
+        rhs = result["demand"] + result["batt_charge_kwh"] + result["grid_export_kwh"]
+        np.testing.assert_allclose(lhs, rhs, rtol=1e-5, atol=1e-6)
+
+    def test_slot_with_no_export_price_is_dropped_not_poisoned(self):
+        """A missing export price must leave the horizon, not NaN the objective."""
+        inputs = pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=4, freq="30min", tz="UTC"),
+            "pv_estimate": [0.0] * 4,
+            "price": [20.0] * 4,
+            "export_price": [5.0, float("nan"), 5.0, 5.0],
+            "demand": [0.5] * 4,
+        })
+        result = mvp_cost_minimiser(inputs_df=inputs, **self._params(initial_soc_pct=50.0))
+
+        assert len(result) == 3
+        assert np.isfinite(result["cost_gbp"]).all()

@@ -10,6 +10,7 @@ requests
 numpy
 foxesscloud
 cvxpy
+highspy
 PyJWT[crypto]
 cryptography
 pytest

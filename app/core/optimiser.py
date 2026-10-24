@@ -20,6 +20,16 @@ DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 # spike that exceeds the battery's own power rating. The old code capped grid
 # import/export at battery power, which is what broke on a kettle + oven draw.
 DEFAULT_GRID_LIMIT_KW = 15.0
+# Battery wear, priced per kWh of throughput (charge + discharge), i.e. half a
+# full cycle. A pure-cost objective happily cycles the battery for a 4p edge;
+# with ~£450/kWh of installed LFP at a 6,000-cycle life, one full cycle of a
+# 5 kWh battery costs £2,250/6,000 = ~37p, i.e. ~3.7p per kWh through the
+# battery. Rounded to 4p. Override per battery once cost/cycle-life are stored.
+DEFAULT_THROUGHPUT_COST_PENCE_PER_KWH = 4.0
+# Wall-clock ceiling for the MILP path (only used when a slot has export >
+# import). The frontend's apiFetch gives up at 30s; failing fast is better than
+# being killed mid-solve. On a hit, the caller gets a hard error and no plan.
+MIP_TIME_LIMIT_S = 20.0
 
 
 def _default_salvage_value_pence(inputs_df: pd.DataFrame) -> float:
@@ -64,10 +74,16 @@ def mvp_cost_minimiser(
     charge_efficiency: float = DEFAULT_CHARGE_EFFICIENCY,
     discharge_efficiency: float = DEFAULT_DISCHARGE_EFFICIENCY,
     grid_limit_kw: float = DEFAULT_GRID_LIMIT_KW,
+    throughput_cost_pence_per_kwh: float = DEFAULT_THROUGHPUT_COST_PENCE_PER_KWH,
     dt_hours: float = 0.5,
 ) -> pd.DataFrame:
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.
+
+    Solved as a pure LP, except in the slots where the export price exceeds the
+    import price: there the LP would import and export simultaneously to print
+    money, so those slots get one binary each and the problem becomes a small
+    MILP (HiGHS). The meter settles net — one direction per half-hour.
 
     Solves a convex optimisation problem to determine optimal battery
     charge/discharge schedule given solar forecast, prices, and demand.
@@ -91,6 +107,12 @@ def mvp_cost_minimiser(
         grid_limit_kw: Grid import/export limit (fuse / export rating). Kept
             separate from battery power so a demand spike above the battery
             rating stays feasible.
+        throughput_cost_pence_per_kwh: Degradation cost of one kWh through the
+            battery (charge + discharge), i.e. about half a full cycle. Prices
+            battery wear into the objective so the LP stops cycling for a
+            sub-penny edge. Defaults to ~4p (≈£450/kWh installed over a
+            6,000-cycle life). It does NOT appear in the reported `cost_gbp`:
+            that column stays cash, this is a shadow cost on the schedule.
         dt_hours: Length of one interval in hours (default 0.5 = half-hour).
 
     Returns:
@@ -107,11 +129,18 @@ def mvp_cost_minimiser(
         raise ValueError("charge_efficiency and discharge_efficiency must be in (0, 1]")
     if grid_limit_kw <= 0:
         raise ValueError("grid_limit_kw must be greater than 0")
+    if throughput_cost_pence_per_kwh < 0:
+        raise ValueError("throughput_cost_pence_per_kwh must be non-negative")
     if min_soc_pct > max_soc_pct:
         raise ValueError("min_soc_pct must be less than or equal to max_soc_pct")
 
     # Ensure we only keep rows with finite price, solar and demand values
-    numeric_cols = [c for c in ["price", "pv_estimate", "demand"] if c in inputs_df.columns]
+    # `export_price` is in the mask too: a NULL there (both agile_rates and
+    # price_history empty for the slot) used to slip through and poison the
+    # objective, and it also silently classified as "not inverted" in the
+    # direction test below.
+    numeric_cols = [c for c in ["price", "pv_estimate", "demand", "export_price"]
+                    if c in inputs_df.columns]
     if not numeric_cols:
         raise ValueError("Missing numeric columns (price/pv_estimate/demand) in inputs data")
     mask = inputs_df[numeric_cols].notna().all(axis=1)
@@ -170,7 +199,28 @@ def mvp_cost_minimiser(
     s_spill = cp.Variable(n, nonneg=True)  # Curtailed solar (kWh)
     soc = cp.Variable(n)  # State of charge (kWh)
 
+    # Grid import and export are mutually exclusive within one half-hour: the
+    # meter settles net, so you cannot be paid to import while simultaneously
+    # being paid to export. A pure LP has no such restriction and exploits the
+    # gap whenever the export price exceeds the import price — which on Agile is
+    # exactly what happens at low and negative prices. It imports 7.5 kWh and
+    # exports 7.5 kWh in the same slot, pockets (export - import) on all of it,
+    # and is capped only by the grid limit: at -7.54p import / 1.60p export that
+    # is ~69p per half-hour of revenue that cannot exist.
+    #
+    # That trade both inflated the reported cost (it out-earned every battery
+    # action, which is why a plan would sit on the SOC floor through a -7.5p
+    # window instead of charging) and made the headline saving fiction. It is
+    # now blocked with one binary per slot where the spread actually inverts.
+    #
+    # Where import >= export the LP already zeroes one side — holding both
+    # positive only adds cost — so those slots need no binary and the common
+    # case stays a pure LP.
+    inverted_spread = export_prices_gbp > import_prices
+    milp_slots = np.flatnonzero(inverted_spread)
+
     constraints = []
+    direction = None
 
     # SOC dynamics and bounds
     for t in range(n):
@@ -201,6 +251,13 @@ def mvp_cost_minimiser(
         constraints.append(g_import[t] <= max_grid_energy)
         constraints.append(g_export[t] <= max_grid_energy)
 
+        # Curtailment can only discard solar that actually exists. Without this
+        # bound spill is a free sink and the LP dumps unlimited *imported*
+        # energy into it: at a negative import price that is free money, and it
+        # is the second route to the same phantom revenue as the simultaneous
+        # import/export trade below (fixing one without the other just moves it).
+        constraints.append(s_spill[t] <= max(solar_gen[t], 0.0))
+
         # Energy balance: solar + discharge + import = demand + charge + export.
         # Any solar that can't be used, stored or exported is spilled (curtailed)
         # rather than making the problem infeasible.
@@ -208,6 +265,23 @@ def mvp_cost_minimiser(
             solar_gen[t] - s_spill[t] + b_discharge[t] + g_import[t] - b_charge[t] - g_export[t]
             == demand[t]
         )
+
+    # Either/or grid direction, only in the slots where the LP would otherwise
+    # trade with itself. 0 => may import only, 1 => may export only.
+    if milp_slots.size:
+        direction = cp.Variable(milp_slots.size, boolean=True)
+        for k, t in enumerate(milp_slots):
+            # Per-slot big-M, tightened to what the slot can physically carry:
+            # import only serves demand or charges, export only comes from solar
+            # or discharge. (Measured: this does not shorten the solve on the
+            # pathological all-negative day, but it keeps the relaxation honest.)
+            # `max(-solar, 0)` term: a negative pv_estimate is nonsense but
+            # nothing clamps it on ingest, and with spill pinned at 0 it would
+            # otherwise make the cap too small for the slot's own balance.
+            import_cap_t = demand[t] + max_batt_charge_energy + max(-solar_gen[t], 0.0)
+            export_cap_t = max(solar_gen[t], 0.0) + max_batt_discharge_energy
+            constraints.append(g_import[t] <= import_cap_t * direction[k])
+            constraints.append(g_export[t] <= export_cap_t * (1 - direction[k]))
 
     # Objective: minimise cost with small grid penalty
     grid_penalty_weight = 0.001
@@ -219,6 +293,16 @@ def mvp_cost_minimiser(
     # the term paid the battery to charge even when that energy was never used,
     # which subsidised lossy cycling.
 
+    # Battery wear. The LP is otherwise blind to throughput: inside a long
+    # negative-price block it will buy at -7.5p and export at +1.5p over and
+    # over (six cycles in 48h for about £1 of cash). Pricing each kWh through
+    # the battery at its degradation cost removes the cycles that don't clear
+    # it, but it is not a ban: at 4p/kWh the marginal round trip still nets
+    # ~+1.2p per AC kWh at -7.5p import / +1.5p export, breaking even around
+    # -6.3p. Deep-negative slots are still worth cycling — that is a policy
+    # choice, so raise this value if a stricter rule is wanted.
+    cost = cost + (throughput_cost_pence_per_kwh / 100.0) * cp.sum(b_charge + b_discharge)
+
     # Terminal salvage: reward energy left in the battery at the horizon end so
     # the optimiser doesn't dump it to the grid for less than its replacement cost.
     cost = cost - salvage_value_gbp * soc[n - 1]
@@ -227,10 +311,41 @@ def mvp_cost_minimiser(
     # Pin the solver and accept a slightly inaccurate optimum; the default
     # solver is non-deterministic across cvxpy builds, and rejecting
     # OPTIMAL_INACCURATE turned harmless numerical tolerance into a hard failure.
-    try:
-        problem.solve(solver=cp.CLARABEL, verbose=False)
-    except cp.error.SolverError:
-        problem.solve(verbose=False)
+    # With binaries present the problem is a MILP: CLARABEL cannot take it, so
+    # HiGHS (the MIP solver cvxpy bundles) is used instead, with SciPy's MILP as
+    # a fallback. The LP-only path is unchanged.
+    if direction is None:
+        try:
+            problem.solve(solver=cp.CLARABEL, verbose=False)
+        except cp.error.SolverError:
+            problem.solve(verbose=False)
+    else:
+        # `mip_abs_gap` = £0.0001 (0.01p) over the whole horizon: exact enough
+        # for a plan worth a couple of pounds, and it stops HiGHS spending
+        # seconds proving a gap nobody cares about. On an extreme day (20h of
+        # negative prices → 40 binaries) this is ~6-12s; on a normal day there
+        # are no binaries and the LP path above is unchanged.
+        # `time_limit`: a pathological block must not stall the 30-min cron or
+        # a manual Preview indefinitely. Hitting the limit fails closed — the
+        # status check below raises before any schedule is built, so the
+        # inverter keeps its previous plan rather than getting a wrong one.
+        # MIP_TIME_LIMIT_S < the frontend's 30s apiFetch deadline.
+        try:
+            problem.solve(
+                solver=cp.HIGHS,
+                mip_abs_gap=1e-4,
+                time_limit=MIP_TIME_LIMIT_S,
+                verbose=False,
+            )
+        except cp.error.SolverError:
+            try:
+                problem.solve(
+                    solver=cp.SCIPY,
+                    scipy_options={"time_limit": MIP_TIME_LIMIT_S},
+                    verbose=False,
+                )
+            except cp.error.SolverError:
+                problem.solve(verbose=False)
 
     if problem.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
         raise ValueError(f"Optimisation failed: {problem.status}")
