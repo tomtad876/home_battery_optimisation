@@ -660,6 +660,176 @@
           }
         }
       ]
+    },
+    {
+      "name": "dst-fall-back",
+      "config": {
+        "threshold": 0.05,
+        "capacityKwh": 5.0,
+        "minSocPct": 20.0,
+        "maxSocPct": 100.0,
+        "ratedPowerW": 3000.0,
+        "supportedModes": [
+          "SelfUse",
+          "ForceCharge",
+          "ForceDischarge",
+          "Feedin"
+        ],
+        "localTimezone": "Europe/London",
+        "maxHours": 24,
+        "maxGroups": 8
+      },
+      "fromTime": "2026-10-24T21:00:00Z",
+      "remainMode": "SelfUse",
+      "slots": [
+        {
+          "period_end": "2026-10-25T00:30:00Z",
+          "net_battery_kwh": 1.5,
+          "soc_pct": 30.0,
+          "grid_import_kwh": 1.5,
+          "grid_export_kwh": 0.0,
+          "price": -7.5,
+          "demand": 0.1,
+          "pv_estimate": 0.0
+        },
+        {
+          "period_end": "2026-10-25T01:00:00Z",
+          "net_battery_kwh": 1.5,
+          "soc_pct": 60.0,
+          "grid_import_kwh": 1.5,
+          "grid_export_kwh": 0.0,
+          "price": -6.3,
+          "demand": 0.1,
+          "pv_estimate": 0.0
+        },
+        {
+          "period_end": "2026-10-25T01:30:00Z",
+          "net_battery_kwh": 0.0,
+          "soc_pct": 60.0,
+          "grid_import_kwh": 0.1,
+          "grid_export_kwh": 0.0,
+          "price": -4.1,
+          "demand": 0.1,
+          "pv_estimate": 0.0
+        }
+      ],
+      "expectedGroups": [
+        {
+          "startHour": 1,
+          "startMinute": 0,
+          "endHour": 2,
+          "endMinute": 0,
+          "workMode": "ForceCharge",
+          "isRemainMode": false,
+          "extraParam": {
+            "minSocOnGrid": 20,
+            "maxSoc": 60,
+            "fdSoc": 60,
+            "fdPwr": 3000
+          }
+        },
+        {
+          "startHour": 0,
+          "startMinute": 0,
+          "endHour": 23,
+          "endMinute": 59,
+          "workMode": "SelfUse",
+          "isRemainMode": true,
+          "extraParam": {
+            "minSocOnGrid": 20
+          }
+        }
+      ]
+    },
+    {
+      "name": "midnight-end",
+      "config": {
+        "threshold": 0.05,
+        "capacityKwh": 5.0,
+        "minSocPct": 20.0,
+        "maxSocPct": 100.0,
+        "ratedPowerW": 3000.0,
+        "supportedModes": [
+          "SelfUse",
+          "ForceCharge",
+          "ForceDischarge",
+          "Feedin"
+        ],
+        "localTimezone": "Europe/London",
+        "maxHours": 24,
+        "maxGroups": 8
+      },
+      "fromTime": "2026-10-24T21:00:00Z",
+      "remainMode": "SelfUse",
+      "slots": [
+        {
+          "period_end": "2026-10-24T22:00:00Z",
+          "net_battery_kwh": 0.0,
+          "soc_pct": 40.0,
+          "grid_import_kwh": 0.1,
+          "grid_export_kwh": 0.0,
+          "price": 1.0,
+          "demand": 0.1,
+          "pv_estimate": 0.0
+        },
+        {
+          "period_end": "2026-10-24T22:30:00Z",
+          "net_battery_kwh": 1.5,
+          "soc_pct": 50.0,
+          "grid_import_kwh": 1.5,
+          "grid_export_kwh": 0.0,
+          "price": 1.0,
+          "demand": 0.1,
+          "pv_estimate": 0.0
+        },
+        {
+          "period_end": "2026-10-24T23:00:00Z",
+          "net_battery_kwh": 1.5,
+          "soc_pct": 70.0,
+          "grid_import_kwh": 1.5,
+          "grid_export_kwh": 0.0,
+          "price": 1.0,
+          "demand": 0.1,
+          "pv_estimate": 0.0
+        },
+        {
+          "period_end": "2026-10-24T23:30:00Z",
+          "net_battery_kwh": 0.0,
+          "soc_pct": 70.0,
+          "grid_import_kwh": 0.1,
+          "grid_export_kwh": 0.0,
+          "price": 1.0,
+          "demand": 0.1,
+          "pv_estimate": 0.0
+        }
+      ],
+      "expectedGroups": [
+        {
+          "startHour": 23,
+          "startMinute": 0,
+          "endHour": 23,
+          "endMinute": 59,
+          "workMode": "ForceCharge",
+          "isRemainMode": false,
+          "extraParam": {
+            "minSocOnGrid": 20,
+            "maxSoc": 70,
+            "fdSoc": 70,
+            "fdPwr": 3000
+          }
+        },
+        {
+          "startHour": 0,
+          "startMinute": 0,
+          "endHour": 23,
+          "endMinute": 59,
+          "workMode": "SelfUse",
+          "isRemainMode": true,
+          "extraParam": {
+            "minSocOnGrid": 20
+          }
+        }
+      ]
     }
   ]
 }

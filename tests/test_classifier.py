@@ -303,11 +303,29 @@ class TestSplitMidnight:
         assert out[1]["endHour"] == 8 and out[1]["endMinute"] == 30
         assert out[1]["workMode"] == "SelfUse"
 
-    def test_group_ending_exactly_at_midnight_not_split(self):
+    def test_group_ending_exactly_at_midnight_has_no_empty_tail(self):
+        """22:00-00:00 is one instruction (22:00-23:59), not two.
+
+        The old splitter always appended a 00:00-00:00 tail here, which reached
+        the inverter as a zero-length instruction.
+        """
         g = {"workMode": "ForceCharge", "startHour": 22, "startMinute": 0, "endHour": 0, "endMinute": 0, "extraParam": {}}
-        # end 00:00 == start 22:00 in day terms; end <= start → spans midnight
+        out = split_groups_at_midnight([g])
+        assert len(out) == 1
+        assert (out[0]["startHour"], out[0]["startMinute"]) == (22, 0)
+        assert (out[0]["endHour"], out[0]["endMinute"]) == (23, 59)
+
+    def test_zero_length_group_is_dropped(self):
+        """A group that starts and ends at the same wall-clock time is noise."""
+        g = {"workMode": "ForceCharge", "startHour": 1, "startMinute": 0, "endHour": 1, "endMinute": 0, "extraParam": {}}
+        assert split_groups_at_midnight([g]) == []
+
+    def test_cross_midnight_tail_kept(self):
+        """23:30-00:30 still splits into both days."""
+        g = {"workMode": "Feedin", "startHour": 23, "startMinute": 30, "endHour": 0, "endMinute": 30, "extraParam": {}}
         out = split_groups_at_midnight([g])
         assert len(out) == 2
+        assert (out[1]["startHour"], out[1]["startMinute"], out[1]["endHour"], out[1]["endMinute"]) == (0, 0, 0, 30)
 
 
 class TestRemainModeGroup:
@@ -371,3 +389,54 @@ class TestPushScheduleRetry:
         r = self._run([41935])
         assert r["pushed"] is False
         assert r["errno"] == 41935
+
+
+class TestDstFallBack:
+    """25 Oct 2026 — Europe/London repeats 01:00-02:00.
+
+    A one-hour charge spanning the transition used to come out as 01:00-01:00
+    in wall-clock terms: zero length, pushed to the inverter as a zero-minute
+    instruction. Seen in prod on 2026-10-24 ("Preview: 01:00-01:00 ForceCharge").
+    """
+
+    def _schedule(self):
+        rows = [
+            ("2026-10-25 00:30", 1.5, 1.5, 30.0),
+            ("2026-10-25 01:00", 1.5, 1.5, 60.0),
+            ("2026-10-25 01:30", 0.0, 0.1, 60.0),
+        ]
+        return pd.DataFrame([
+            {
+                "period_end": pd.Timestamp(ts, tz="UTC"),
+                "net_battery_kwh": net,
+                "grid_import_kwh": imp,
+                "grid_export_kwh": 0.0,
+                "soc_pct": soc,
+                "price": -6.0,
+                "demand": 0.1,
+                "pv_estimate": 0.0,
+            }
+            for ts, net, imp, soc in rows
+        ])
+
+    def test_fall_back_hour_group_has_a_real_window(self):
+        groups = classify_optimiser_output(
+            self._schedule(),
+            from_time=datetime(2026, 10, 24, 21, 0, tzinfo=timezone.utc),
+        )
+        charge = [g for g in groups if g["workMode"] == FOXESS_MODE_FORCE_CHARGE]
+        assert len(charge) == 1
+        g = charge[0]
+        assert (g["startHour"], g["startMinute"]) == (1, 0)
+        assert (g["endHour"], g["endMinute"]) == (2, 0), (
+            f"expected 01:00-02:00, got {g['startHour']:02d}:{g['startMinute']:02d}"
+            f"-{g['endHour']:02d}:{g['endMinute']:02d}"
+        )
+
+    def test_no_group_is_zero_length_anywhere(self):
+        groups = classify_optimiser_output(
+            self._schedule(),
+            from_time=datetime(2026, 10, 24, 21, 0, tzinfo=timezone.utc),
+        )
+        for g in groups:
+            assert (g["startHour"], g["startMinute"]) != (g["endHour"], g["endMinute"])

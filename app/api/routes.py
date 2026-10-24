@@ -576,6 +576,13 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
         groups = []
         pushed = False
         push_error = str(e)
+        if req.preview:
+            # A failed preview must say so. This used to fall through to the
+            # success return with an empty group list: the dashboard showed
+            # "0 instructions" and no error, indistinguishable from a plan that
+            # genuinely has nothing to do (seen 2026-10-24, first Preview press).
+            mark_run_status(run_id, "push_failed")
+            raise HTTPException(status_code=502, detail=f"Preview failed: {push_error}")
 
     if not pushed and not req.preview:
         mark_run_status(run_id, "push_failed")

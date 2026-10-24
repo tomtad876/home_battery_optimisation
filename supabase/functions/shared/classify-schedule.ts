@@ -240,11 +240,23 @@ export function classifySchedule(
     const sp = localParts(new Date(startMs), tz);
     const ep = localParts(new Date(endMs), tz);
 
+    // DST fall-back guard (mirrors Python): when the clocks go back the local
+    // wall clock moves backwards, so a real window can read 01:30 BST -> 01:00
+    // GMT and collapse to zero length. The device runs a daily-recurring wall
+    // clock, so rebuild the end from the start plus the true UTC duration
+    // whenever the local end does not move forward.
+    const startMinOfDay = sp.hour * 60 + sp.minute;
+    let endMinOfDay = ep.hour * 60 + ep.minute;
+    if (endMinOfDay <= startMinOfDay) {
+      const durationMin = Math.max(1, Math.round((endMs - startMs) / 60_000));
+      endMinOfDay = (startMinOfDay + durationMin) % (24 * 60);
+    }
+
     out.push({
       startHour: sp.hour,
       startMinute: sp.minute,
-      endHour: ep.hour,
-      endMinute: ep.minute,
+      endHour: Math.floor(endMinOfDay / 60),
+      endMinute: endMinOfDay % 60,
       workMode: g.mode,
       isRemainMode: false,
       extraParam,
@@ -327,10 +339,13 @@ export function splitGroupsAtMidnight(groups: FoxESSGroup[]): FoxESSGroup[] {
     const endM = g.endHour * 60 + g.endMinute;
     if (endM < startM) {
       out.push({ ...g, endHour: 23, endMinute: 59 });
-      out.push({ ...g, startHour: 0, startMinute: 0 });
-    } else {
+      // A group ending exactly at 00:00 has no next-day part; adding
+      // 00:00-00:00 would push a zero-length instruction.
+      if (endM > 0) out.push({ ...g, startHour: 0, startMinute: 0 });
+    } else if (endM > startM) {
       out.push(g);
     }
+    // endM === startM: zero-length artefact — dropped, never pushed.
   }
   return out;
 }
