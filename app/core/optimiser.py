@@ -69,6 +69,11 @@ def mvp_cost_minimiser(
     """
     Linear programming optimiser: minimise electricity cost over forecast horizon.
 
+    Solved as a pure LP, except in the slots where the export price exceeds the
+    import price: there the LP would import and export simultaneously to print
+    money, so those slots get one binary each and the problem becomes a small
+    MILP (HiGHS). The meter settles net — one direction per half-hour.
+
     Solves a convex optimisation problem to determine optimal battery
     charge/discharge schedule given solar forecast, prices, and demand.
 
@@ -170,7 +175,28 @@ def mvp_cost_minimiser(
     s_spill = cp.Variable(n, nonneg=True)  # Curtailed solar (kWh)
     soc = cp.Variable(n)  # State of charge (kWh)
 
+    # Grid import and export are mutually exclusive within one half-hour: the
+    # meter settles net, so you cannot be paid to import while simultaneously
+    # being paid to export. A pure LP has no such restriction and exploits the
+    # gap whenever the export price exceeds the import price — which on Agile is
+    # exactly what happens at low and negative prices. It imports 7.5 kWh and
+    # exports 7.5 kWh in the same slot, pockets (export - import) on all of it,
+    # and is capped only by the grid limit: at -7.54p import / 1.60p export that
+    # is ~69p per half-hour of revenue that cannot exist.
+    #
+    # That trade both inflated the reported cost (it out-earned every battery
+    # action, which is why a plan would sit on the SOC floor through a -7.5p
+    # window instead of charging) and made the headline saving fiction. It is
+    # now blocked with one binary per slot where the spread actually inverts.
+    #
+    # Where import >= export the LP already zeroes one side — holding both
+    # positive only adds cost — so those slots need no binary and the common
+    # case stays a pure LP.
+    inverted_spread = export_prices_gbp > import_prices
+    milp_slots = np.flatnonzero(inverted_spread)
+
     constraints = []
+    direction = None
 
     # SOC dynamics and bounds
     for t in range(n):
@@ -201,6 +227,13 @@ def mvp_cost_minimiser(
         constraints.append(g_import[t] <= max_grid_energy)
         constraints.append(g_export[t] <= max_grid_energy)
 
+        # Curtailment can only discard solar that actually exists. Without this
+        # bound spill is a free sink and the LP dumps unlimited *imported*
+        # energy into it: at a negative import price that is free money, and it
+        # is the second route to the same phantom revenue as the simultaneous
+        # import/export trade below (fixing one without the other just moves it).
+        constraints.append(s_spill[t] <= max(solar_gen[t], 0.0))
+
         # Energy balance: solar + discharge + import = demand + charge + export.
         # Any solar that can't be used, stored or exported is spilled (curtailed)
         # rather than making the problem infeasible.
@@ -208,6 +241,20 @@ def mvp_cost_minimiser(
             solar_gen[t] - s_spill[t] + b_discharge[t] + g_import[t] - b_charge[t] - g_export[t]
             == demand[t]
         )
+
+    # Either/or grid direction, only in the slots where the LP would otherwise
+    # trade with itself. 0 => may import only, 1 => may export only.
+    if milp_slots.size:
+        direction = cp.Variable(milp_slots.size, boolean=True)
+        for k, t in enumerate(milp_slots):
+            # Per-slot big-M, tightened to what the slot can physically carry:
+            # import only serves demand or charges, export only comes from solar
+            # or discharge. (Measured: this does not shorten the solve on the
+            # pathological all-negative day, but it keeps the relaxation honest.)
+            import_cap_t = demand[t] + max_batt_charge_energy
+            export_cap_t = max(solar_gen[t], 0.0) + max_batt_discharge_energy
+            constraints.append(g_import[t] <= import_cap_t * direction[k])
+            constraints.append(g_export[t] <= export_cap_t * (1 - direction[k]))
 
     # Objective: minimise cost with small grid penalty
     grid_penalty_weight = 0.001
@@ -227,10 +274,27 @@ def mvp_cost_minimiser(
     # Pin the solver and accept a slightly inaccurate optimum; the default
     # solver is non-deterministic across cvxpy builds, and rejecting
     # OPTIMAL_INACCURATE turned harmless numerical tolerance into a hard failure.
-    try:
-        problem.solve(solver=cp.CLARABEL, verbose=False)
-    except cp.error.SolverError:
-        problem.solve(verbose=False)
+    # With binaries present the problem is a MILP: CLARABEL cannot take it, so
+    # HiGHS (the MIP solver cvxpy bundles) is used instead, with SciPy's MILP as
+    # a fallback. The LP-only path is unchanged.
+    if direction is None:
+        try:
+            problem.solve(solver=cp.CLARABEL, verbose=False)
+        except cp.error.SolverError:
+            problem.solve(verbose=False)
+    else:
+        # `mip_abs_gap` = £0.0001 (0.01p) over the whole horizon: exact enough
+        # for a plan worth a couple of pounds, and it stops HiGHS spending
+        # seconds proving a gap nobody cares about. On an extreme day (20h of
+        # negative prices → 40 binaries) this is ~6-12s; on a normal day there
+        # are no binaries and the LP path above is unchanged.
+        try:
+            problem.solve(solver=cp.HIGHS, mip_abs_gap=1e-4, verbose=False)
+        except cp.error.SolverError:
+            try:
+                problem.solve(solver=cp.SCIPY, verbose=False)
+            except cp.error.SolverError:
+                problem.solve(verbose=False)
 
     if problem.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
         raise ValueError(f"Optimisation failed: {problem.status}")
