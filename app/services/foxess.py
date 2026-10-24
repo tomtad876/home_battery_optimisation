@@ -284,6 +284,22 @@ def classify_optimiser_output(
         start_local = start_utc.to_pydatetime().astimezone(tz)
         end_local = end_utc.to_pydatetime().astimezone(tz)
 
+        # DST fall-back guard. On the last Sunday of October Europe/London
+        # repeats 01:00-02:00, so a real half-hour slot can read
+        # 01:30 BST -> 01:00 GMT: the wall clock goes backwards and the group's
+        # window collapses. Observed 2026-10-24: a one-hour overnight charge
+        # came out as 01:00-01:00 (the device would get a zero-length window,
+        # and `split_groups_at_midnight` used to turn that into a corrupt
+        # all-day pair). FoxESS schedules are daily-recurring *wall clock*, so
+        # rebuild the end from the start plus the true (UTC) duration whenever
+        # the local end does not move forward.
+        start_min = start_local.hour * 60 + start_local.minute
+        end_min = end_local.hour * 60 + end_local.minute
+        if end_min <= start_min:
+            duration_min = max(1, round((end_utc - start_utc).total_seconds() / 60.0))
+            end_min = (start_min + duration_min) % (24 * 60)
+            end_local = end_local.replace(hour=end_min // 60, minute=end_min % 60)
+
         # Duration in hours of the CLIPPED group (a group clipped at its start
         # has less time to move the scheduled energy, so power must be sized up).
         duration_h = max((end_utc - start_utc).total_seconds() / 3600.0, 0.5 / 60.0)
@@ -443,11 +459,15 @@ def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
         if end_m < start_m:
             # Spans midnight: split at 23:59 of the first day / 00:00 of the next
             first = {**g, "endHour": 23, "endMinute": 59}
-            second = {**g, "startHour": 0, "startMinute": 0}
             out.append(first)
-            out.append(second)
-        else:
+            # A group that ends exactly at 00:00 has no next-day part. Emitting
+            # 00:00-00:00 sends the inverter a zero-length instruction.
+            if end_m > 0:
+                second = {**g, "startHour": 0, "startMinute": 0}
+                out.append(second)
+        elif end_m > start_m:
             out.append(g)
+        # end_m == start_m: a zero-length artefact — drop it, never push it.
     return out
 
 
