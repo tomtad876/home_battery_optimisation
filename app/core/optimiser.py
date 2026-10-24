@@ -20,6 +20,12 @@ DEFAULT_DISCHARGE_EFFICIENCY = 0.95
 # spike that exceeds the battery's own power rating. The old code capped grid
 # import/export at battery power, which is what broke on a kettle + oven draw.
 DEFAULT_GRID_LIMIT_KW = 15.0
+# Battery wear, priced per kWh of throughput (charge + discharge), i.e. half a
+# full cycle. A pure-cost objective happily cycles the battery for a 4p edge;
+# with ~£450/kWh of installed LFP at a 6,000-cycle life, one full cycle of a
+# 5 kWh battery costs £2,250/6,000 = ~37p, i.e. ~3.7p per kWh through the
+# battery. Rounded to 4p. Override per battery once cost/cycle-life are stored.
+DEFAULT_THROUGHPUT_COST_PENCE_PER_KWH = 4.0
 
 
 def _default_salvage_value_pence(inputs_df: pd.DataFrame) -> float:
@@ -64,6 +70,7 @@ def mvp_cost_minimiser(
     charge_efficiency: float = DEFAULT_CHARGE_EFFICIENCY,
     discharge_efficiency: float = DEFAULT_DISCHARGE_EFFICIENCY,
     grid_limit_kw: float = DEFAULT_GRID_LIMIT_KW,
+    throughput_cost_pence_per_kwh: float = DEFAULT_THROUGHPUT_COST_PENCE_PER_KWH,
     dt_hours: float = 0.5,
 ) -> pd.DataFrame:
     """
@@ -96,6 +103,12 @@ def mvp_cost_minimiser(
         grid_limit_kw: Grid import/export limit (fuse / export rating). Kept
             separate from battery power so a demand spike above the battery
             rating stays feasible.
+        throughput_cost_pence_per_kwh: Degradation cost of one kWh through the
+            battery (charge + discharge), i.e. about half a full cycle. Prices
+            battery wear into the objective so the LP stops cycling for a
+            sub-penny edge. Defaults to ~4p (≈£450/kWh installed over a
+            6,000-cycle life). It does NOT appear in the reported `cost_gbp`:
+            that column stays cash, this is a shadow cost on the schedule.
         dt_hours: Length of one interval in hours (default 0.5 = half-hour).
 
     Returns:
@@ -112,6 +125,8 @@ def mvp_cost_minimiser(
         raise ValueError("charge_efficiency and discharge_efficiency must be in (0, 1]")
     if grid_limit_kw <= 0:
         raise ValueError("grid_limit_kw must be greater than 0")
+    if throughput_cost_pence_per_kwh < 0:
+        raise ValueError("throughput_cost_pence_per_kwh must be non-negative")
     if min_soc_pct > max_soc_pct:
         raise ValueError("min_soc_pct must be less than or equal to max_soc_pct")
 
@@ -265,6 +280,13 @@ def mvp_cost_minimiser(
     # removed. Cross-period arbitrage is already priced by the SOC dynamics, and
     # the term paid the battery to charge even when that energy was never used,
     # which subsidised lossy cycling.
+
+    # Battery wear. The LP is otherwise blind to throughput: inside a long
+    # negative-price block it buys at -7.5p and exports at +1.5p over and over
+    # (six cycles in 48h for about £1 of cash, which costs more in battery life
+    # than it earns). Pricing each kWh through the battery at its degradation
+    # cost leaves only the cycles that clear it.
+    cost = cost + (throughput_cost_pence_per_kwh / 100.0) * cp.sum(b_charge + b_discharge)
 
     # Terminal salvage: reward energy left in the battery at the horizon end so
     # the optimiser doesn't dump it to the grid for less than its replacement cost.

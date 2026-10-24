@@ -253,6 +253,9 @@ class TestRoundTripEfficiency:
             charge_power_kw=10.0,
             discharge_power_kw=10.0,
             salvage_value_pence=29.0,
+            # Isolate the efficiency mechanism; battery wear is priced (and
+            # tested) separately in TestThroughputCost.
+            throughput_cost_pence_per_kwh=0.0,
         )
         params.update(overrides)
         return params
@@ -531,3 +534,109 @@ class TestNetGridFlows:
         np.testing.assert_allclose(lhs, rhs, rtol=1e-5, atol=1e-6)
         assert (result["soc_kwh"] >= 1.0 - 1e-6).all()   # 20% of 5 kWh
         assert (result["soc_kwh"] <= 5.0 + 1e-6).all()
+
+
+class TestThroughputCost:
+    """Battery wear is a cost: the LP must stop cycling for sub-penny edges.
+
+    Added after the 2026-10-24 meter-netting fix exposed the real arbitrage
+    underneath it: inside a long negative-price block the LP buys at -7.5p and
+    exports at +1.5p over and over — six cycles of a 5 kWh battery in 48h for
+    about £1 of cash. At ~£450/kWh installed over a 6,000-cycle life a full
+    cycle costs ~37p, so those cycles were destroying more value than they
+    made. Throughput is now priced at DEFAULT_THROUGHPUT_COST_PENCE_PER_KWH.
+    """
+
+    def _cycle_inputs(self, export_pence):
+        """Sell 1 kWh into period 0, buy it back at 27.9p in period 1."""
+        return pd.DataFrame({
+            "period_end": pd.date_range("2025-09-20", periods=2, freq="30min", tz="UTC"),
+            "pv_estimate": [0.0, 0.0],
+            "price": [100.0, 27.9],
+            "export_price": [export_pence, 1.0],
+            "demand": [0.0, 0.0],
+        })
+
+    def _params(self, **overrides):
+        params = dict(
+            battery_capacity_kwh=10.0,
+            initial_soc_pct=50.0,
+            min_soc_pct=20.0,
+            max_soc_pct=50.0,   # can't stockpile above the start
+            charge_power_kw=10.0,
+            discharge_power_kw=10.0,
+            salvage_value_pence=29.0,
+        )
+        params.update(overrides)
+        return params
+
+    def test_a_thin_spread_clears_efficiency_but_not_wear(self):
+        """33p vs 27.9p covers the round-trip loss (~30.9p) but only just.
+
+        Without a wear price the cycle is worth ~2p; with wear at 4p/kWh it
+        costs ~8.4p of battery life for 1 kWh exported, so it must not happen.
+        """
+        lossless = mvp_cost_minimiser(
+            inputs_df=self._cycle_inputs(33.0),
+            **self._params(throughput_cost_pence_per_kwh=0.0),
+        )
+        assert lossless["batt_discharge_kwh"].sum() > 0.5, "sanity: this spread does clear efficiency"
+
+        priced = mvp_cost_minimiser(inputs_df=self._cycle_inputs(33.0), **self._params())
+        assert priced["batt_discharge_kwh"].sum() < 1e-6, (
+            "a 2p edge must not buy 8p of battery wear, discharged "
+            f"{priced['batt_discharge_kwh'].sum():.2f} kWh"
+        )
+
+    def test_a_wide_spread_still_cycles(self):
+        """60p vs 27.9p clears both the losses (~30.9p) and the wear (~8.4p)."""
+        result = mvp_cost_minimiser(inputs_df=self._cycle_inputs(60.0), **self._params())
+        assert result["batt_discharge_kwh"].sum() > 0.5
+
+    def test_reported_cost_stays_cash_not_wear(self):
+        """Wear is a shadow cost on the schedule; the cost column must stay cash."""
+        result = mvp_cost_minimiser(inputs_df=self._cycle_inputs(60.0), **self._params())
+        net = result["grid_import_kwh"] - result["grid_export_kwh"]
+        cash = np.where(
+            net > 0,
+            net * result["price"] / 100.0,
+            net * result["export_price_pence"] / 100.0,
+        ).sum()
+        assert result["cost_gbp"].sum() == pytest.approx(cash, abs=1e-6)
+
+    def test_negative_throughput_cost_raises(self):
+        with pytest.raises(ValueError, match="throughput_cost"):
+            mvp_cost_minimiser(
+                inputs_df=self._cycle_inputs(60.0),
+                throughput_cost_pence_per_kwh=-1.0,
+            )
+
+    def test_wear_tames_a_negative_price_block(self):
+        """The live-pathology shape: 8h of negative prices, export positive.
+
+        Free throughput churns the battery; priced throughput leaves the useful
+        cycle (fill once, hold for the evening) and drops the rest.
+        """
+        n = 16
+        prices = [-7.0, -5.0, -3.0] * 5 + [-1.0]
+        inputs = pd.DataFrame({
+            "period_end": pd.date_range("2026-10-25 00:00", periods=n, freq="30min", tz="UTC"),
+            "price": prices,
+            "export_price": [1.5] * n,
+            "demand": [0.1] * n,
+            "pv_estimate": [0.0] * n,
+        })
+
+        free = mvp_cost_minimiser(
+            inputs_df=inputs,
+            **self._params(salvage_value_pence=20.0, throughput_cost_pence_per_kwh=0.0),
+        )
+        priced = mvp_cost_minimiser(
+            inputs_df=inputs, **self._params(salvage_value_pence=20.0)
+        )
+
+        assert priced["batt_discharge_kwh"].sum() < free["batt_discharge_kwh"].sum() * 0.8
+        # It must still fill up — the energy is needed later, not the point of
+        # the trade — and the cash should barely move.
+        assert priced["soc_kwh"].max() > 3.0
+        assert priced["cost_gbp"].sum() <= 0.0
