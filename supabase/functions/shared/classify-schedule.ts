@@ -10,6 +10,9 @@
  * the Python implementation also asserts against.
  *
  * Modes: SelfUse, ForceCharge, ForceDischarge, Feedin
+ *
+ * "Hold" is an internal marker only (never pushed): battery idle while the
+ * grid serves the load, rendered as SelfUse with a raised minSocOnGrid.
  */
 
 export interface OptimiserSlot {
@@ -91,6 +94,12 @@ function classifySlot(slot: OptimiserSlot, threshold: number): string {
       return "ForceCharge";
     }
     return "Feedin";
+  }
+  // Battery idle while the grid serves the load. SelfUse would discharge the
+  // battery into that load instead (2026-10-25: 100% → 61% across a
+  // negative-price window), so express the intent explicitly as a hold.
+  if (importKwh > threshold) {
+    return "Hold";
   }
   return "SelfUse";
 }
@@ -211,7 +220,19 @@ export function classifySchedule(
     let minSoc = config.minSocPct;
     let maxSoc = config.maxSocPct;
     let powerW = config.ratedPowerW;
-    if (g.mode === "ForceCharge") {
+    let workMode = g.mode;
+    if (g.mode === "Hold") {
+      // Hold: raise the discharge floor to the SOC the optimiser planned to
+      // sit at, so SelfUse cannot drain the battery. Round DOWN so we never
+      // ask the inverter to charge above what was planned. Rendered as
+      // SelfUse (FoxESS has no idle mode); at the default floor the group is
+      // then dropped as remain-equivalent by prepareScheduleGroups.
+      minSoc = Math.max(
+        config.minSocPct,
+        Math.min(config.maxSocPct, roundSocDown(Math.min(...groupSlots.map((s) => s.soc_pct)))),
+      );
+      workMode = "SelfUse";
+    } else if (g.mode === "ForceCharge") {
       // maxSoc = highest SOC this charge period reaches (rounded up 5%)
       maxSoc = Math.min(config.maxSocPct, roundSocUp(Math.max(...groupSlots.map((s) => s.soc_pct))));
       const energy = groupSlots.reduce((a, s) => a + s.net_battery_kwh, 0);
@@ -226,13 +247,13 @@ export function classifySchedule(
 
     // Mirrors Python _build_v3_period.
     const extraParam: Record<string, number> = { minSocOnGrid: Math.round(minSoc) };
-    if (g.mode === "ForceCharge") {
+    if (workMode === "ForceCharge") {
       // fdSoc doubles as the device's "Charging cut-off"; the FoxESS reference
       // library defaults it to maxSoc (differing values show a wrong cutoff).
       extraParam.maxSoc = Math.round(maxSoc);
       extraParam.fdSoc = Math.round(maxSoc);
       extraParam.fdPwr = Math.trunc(powerW);
-    } else if (g.mode === "ForceDischarge") {
+    } else if (workMode === "ForceDischarge") {
       extraParam.fdSoc = Math.round(minSoc);
       extraParam.fdPwr = Math.trunc(powerW);
     }
@@ -257,7 +278,7 @@ export function classifySchedule(
       startMinute: sp.minute,
       endHour: Math.floor(endMinOfDay / 60),
       endMinute: endMinOfDay % 60,
-      workMode: g.mode,
+      workMode,
       isRemainMode: false,
       extraParam,
     });
@@ -322,13 +343,65 @@ export function prepareScheduleGroups(
   const roomForInstructions = Math.max(1, maxGroups - 1);
 
   let groups = classifySchedule(slots, config, fromTime);
-  groups = groups.filter((g) => g.workMode !== remainMode);
+  // A group only adds nothing when it matches the remain mode *and* the
+  // remain-mode discharge floor — SelfUse at a raised floor is a hold.
+  groups = groups.filter(
+    (g) =>
+      !(
+        g.workMode === remainMode &&
+        Math.round(g.extraParam.minSocOnGrid) === Math.round(config.minSocPct)
+      ),
+  );
   groups = splitGroupsAtMidnight(groups);
-  if (groups.length > roomForInstructions) {
-    groups = mergeGroups(groups, roomForInstructions);
+
+  // Holds must never be absorbed into a neighbour: merging "don't touch the
+  // battery" into a Feedin/ForceDischarge window turns it into a forced
+  // export. If the device can't fit them all, drop the weakest holds instead
+  // (that degrades to plain SelfUse — the pre-hold behaviour — not to a forced
+  // discharge).
+  const holds = groups.filter((g) => isHold(g, config.minSocPct));
+  const others = groups.filter((g) => !isHold(g, config.minSocPct));
+  const mergedOthers =
+    others.length > roomForInstructions
+      ? mergeGroups(others, roomForInstructions)
+      : others;
+
+  const budget = Math.max(0, roomForInstructions - mergedOthers.length);
+  let keptHolds = holds;
+  if (holds.length > budget) {
+    // Keep the holds protecting the most energy: highest floor first, then
+    // longest window.
+    const keep = [...holds]
+      .sort(
+        (a, b) =>
+          Math.round(b.extraParam.minSocOnGrid) -
+            Math.round(a.extraParam.minSocOnGrid) ||
+          groupMinutes(b) - groupMinutes(a),
+      )
+      .slice(0, budget);
+    const keepSet = new Set(keep);
+    keptHolds = holds.filter((g) => keepSet.has(g));
   }
+
+  const keepSet = new Set([...mergedOthers, ...keptHolds]);
+  groups = groups.filter((g) => keepSet.has(g));
   groups.push(buildRemainModeGroup(remainMode, config.minSocPct));
   return groups;
+}
+
+/** A hold is SelfUse at a raised discharge floor (battery idle, grid serves). */
+function isHold(group: FoxESSGroup, minSocPct: number): boolean {
+  return (
+    group.workMode === "SelfUse" &&
+    Math.round(group.extraParam.minSocOnGrid) > Math.round(minSocPct)
+  );
+}
+
+/** Wall-clock length of a group in minutes (mod 24h). */
+function groupMinutes(group: FoxESSGroup): number {
+  const start = group.startHour * 60 + group.startMinute;
+  const end = group.endHour * 60 + group.endMinute;
+  return (end - start + 24 * 60) % (24 * 60);
 }
 
 /** Split any group that spans midnight into two groups (one per day). */

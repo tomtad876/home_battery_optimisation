@@ -50,6 +50,93 @@ function period(
   };
 }
 
+Deno.test("hold: idle while importing raises the floor instead of self-using", () => {
+  // 2026-10-25: the plan said "import 0.09 kWh at -2p, SOC stays 100%".
+  // This used to classify as SelfUse and get dropped as remain-equivalent,
+  // so the inverter served the house from the battery and it fell to 61%.
+  const slots: OptimiserSlot[] = [
+    {
+      period_end: "2026-10-25T15:00:00Z",
+      net_battery_kwh: 0,
+      soc_pct: 100,
+      grid_import_kwh: 0.0865,
+      grid_export_kwh: 0,
+      price: -2,
+    },
+    {
+      period_end: "2026-10-25T15:30:00Z",
+      net_battery_kwh: 0,
+      soc_pct: 100,
+      grid_import_kwh: 0.12,
+      grid_export_kwh: 0,
+      price: -1.24,
+    },
+  ];
+  const groups = prepareScheduleGroups(
+    slots,
+    {
+      threshold: 0.05,
+      capacityKwh: 5,
+      minSocPct: 20,
+      maxSocPct: 100,
+      ratedPowerW: 3000,
+      maxGroups: 8,
+      supportedModes: ["SelfUse", "ForceCharge", "ForceDischarge", "Feedin"],
+      localTimezone: "Europe/London",
+    },
+    new Date("2026-10-25T14:30:00Z"),
+    "SelfUse",
+  );
+
+  assertEquals(groups.length, 2); // hold + remain
+  const hold = groups[0];
+  assertEquals(hold.isRemainMode, false);
+  assertEquals(hold.workMode, "SelfUse");
+  assertEquals(hold.extraParam.minSocOnGrid, 100);
+  // A floor, not a force-charge: nothing may drive the battery.
+  assertEquals(hold.extraParam.fdSoc, undefined);
+  assertEquals(hold.extraParam.fdPwr, undefined);
+  assertEquals(groups[1].isRemainMode, true);
+});
+
+Deno.test("hold: dropped, not merged into a forced group, when over budget", () => {
+  const cfg: ClassifierConfig = {
+    threshold: 0.05,
+    capacityKwh: 5,
+    minSocPct: 20,
+    maxSocPct: 100,
+    ratedPowerW: 3000,
+    maxGroups: 3, // room for 2 instructions + remain
+    supportedModes: ["SelfUse", "ForceCharge", "ForceDischarge", "Feedin"],
+    localTimezone: "Europe/London",
+  };
+  const slot = (h: number, m: number, net: number, imp: number, exp: number, soc: number) => ({
+    period_end: new Date(Date.UTC(2026, 9, 25, h, m)).toISOString(),
+    net_battery_kwh: net,
+    soc_pct: soc,
+    grid_import_kwh: imp,
+    grid_export_kwh: exp,
+    price: 10,
+  });
+  const slots: OptimiserSlot[] = [
+    slot(15, 0, 0, 0.2, 0, 100),   // hold
+    slot(15, 30, 0, 0.2, 0, 100),  // hold
+    slot(16, 0, 0, 0, 0.5, 100),   // Feedin
+    slot(16, 30, 0, 0, 0.5, 100),  // Feedin
+    slot(17, 0, -1.5, 0, 1.5, 70), // ForceDischarge
+    slot(17, 30, -1.5, 0, 1.5, 40),
+  ];
+  const groups = prepareScheduleGroups(slots, cfg, new Date("2026-10-25T14:30:00Z"), "SelfUse");
+
+  assertEquals(groups.length, 3);
+  assertEquals(groups[0].workMode, "Feedin");
+  // period_end 16:00 means the 15:30-16:00 slot, so Feedin starts at 15:30.
+  assertEquals(groups[0].startHour, 15);
+  assertEquals(groups[0].startMinute, 30); // not widened back over the hold window
+  assertEquals(groups[1].workMode, "ForceDischarge");
+  assertEquals(groups[2].isRemainMode, true);
+});
+
 Deno.test("merge: index 0 widens the survivor's start (not its end)", () => {
   const merged = mergeGroups(
     [period(22, 0, 23, 0, "ForceCharge"), period(23, 0, 23, 30, "ForceDischarge")],

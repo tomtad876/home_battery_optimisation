@@ -142,6 +142,13 @@ FOXESS_MODE_FORCE_CHARGE = "ForceCharge"
 FOXESS_MODE_FORCE_DISCHARGE = "ForceDischarge"
 FOXESS_MODE_FEEDIN = "Feedin"
 
+# Internal classification marker — never sent to the device as a work mode.
+# Means "battery stays where it is, the grid serves the load", which FoxESS has
+# no mode for. Rendered as SelfUse with minSocOnGrid raised to the planned SOC:
+# minSocOnGrid is the discharge floor, so raising it stops SelfUse quietly
+# draining the battery (2026-10-25: 100% → 61% across a negative-price window).
+MODE_HOLD = "Hold"
+
 _MODE_MAP = {
     0: FOXESS_MODE_SELF_USE,
     1: FOXESS_MODE_FORCE_CHARGE,
@@ -245,6 +252,12 @@ def classify_optimiser_output(
             if price < 0:
                 return FOXESS_MODE_FORCE_CHARGE
             return FOXESS_MODE_FEEDIN
+        # Battery idle while the grid serves the load. SelfUse would discharge
+        # the battery into that load instead, which silently breaks the plan:
+        # the optimiser said "import 0.09 kWh at -2p and keep 100%", the
+        # inverter ran the house off the battery and dropped to 61%.
+        if import_kwh > threshold:
+            return MODE_HOLD
         return FOXESS_MODE_SELF_USE
 
     df["mode"] = df.apply(_classify, axis=1)
@@ -310,6 +323,19 @@ def classify_optimiser_output(
         grp_min_soc = min_soc_pct
         grp_max_soc = max_soc_pct
         grp_power = rated_power_w
+        render_mode = mode
+        if mode == MODE_HOLD:
+            # Hold: raise the discharge floor to the SOC the optimiser planned
+            # to sit at, so SelfUse cannot drain the battery. Round DOWN so we
+            # never ask the inverter to charge above what was planned.
+            planned_soc = (
+                grp["soc_pct"].min() if "soc_pct" in grp.columns else min_soc_pct
+            )
+            grp_min_soc = max(min_soc_pct, min(max_soc_pct, _round_soc_down(planned_soc)))
+            render_mode = FOXESS_MODE_SELF_USE
+            # At the default floor there is nothing to protect: the device's
+            # remain mode is already SelfUse at that floor, so the group gets
+            # dropped as remain-equivalent below.
         if mode == FOXESS_MODE_FORCE_CHARGE and "soc_pct" in grp.columns:
             # maxSoc = highest SOC this charge period reaches (rounded up 5%)
             grp_max_soc = min(max_soc_pct, _round_soc_up(grp["soc_pct"].max()))
@@ -326,7 +352,7 @@ def classify_optimiser_output(
 
         # Build v3 period dict directly (no foxesscloud dependency)
         period = _build_v3_period(
-            start_local, end_local, mode,
+            start_local, end_local, render_mode,
             min_soc_pct=grp_min_soc,
             max_soc_pct=grp_max_soc,
             rated_power_w=grp_power,
@@ -495,6 +521,36 @@ def split_groups_at_midnight(groups: list[dict]) -> list[dict]:
     return out
 
 
+def _is_hold(group: dict, min_soc_pct: float) -> bool:
+    """A hold is SelfUse at a raised discharge floor (battery idle, grid serves)."""
+    if group.get("workMode") != FOXESS_MODE_SELF_USE:
+        return False
+    floor = group.get("extraParam", {}).get("minSocOnGrid", min_soc_pct)
+    return round(floor) > round(min_soc_pct)
+
+
+def _group_minutes(group: dict) -> int:
+    """Wall-clock length of a group in minutes (mod 24h)."""
+    start = group["startHour"] * 60 + group["startMinute"]
+    end = group["endHour"] * 60 + group["endMinute"]
+    return (end - start) % (24 * 60)
+
+
+def _is_remain_equivalent(
+    group: dict, remain_mode: str, min_soc_pct: float
+) -> bool:
+    """True if a group adds nothing over the device's remain-mode fallback.
+
+    A SelfUse group at the default discharge floor is redundant — the remain
+    mode already does that in unscheduled gaps. The *same* mode at a raised
+    floor is not: it's a hold instruction, so the floor is part of the test.
+    """
+    if group.get("workMode") != remain_mode:
+        return False
+    group_floor = group.get("extraParam", {}).get("minSocOnGrid", min_soc_pct)
+    return round(group_floor) == round(min_soc_pct)
+
+
 def post_process_groups(
     groups: list[dict],
     *,
@@ -504,17 +560,43 @@ def post_process_groups(
 ) -> list[dict]:
     """Apply the push pipeline to classified groups (mirrors classify_and_push).
 
-    Drop groups matching the device's remain mode (redundant — the inverter
-    already falls back to it in unscheduled gaps), split cross-midnight groups,
-    merge down to ``max_groups - 1`` (leaving room for the remain group), then
-    append the remain group. Deliberately pure (no API calls) so it can be
-    parity-tested against the TypeScript classifier.
+    Drop instructions the device's remain mode already covers at the same
+    discharge floor, split cross-midnight groups, fit the rest into
+    ``max_groups - 1`` (leaving room for the remain group), then append the
+    remain group. Holds (SelfUse at a raised floor) are never merged into a
+    neighbour — that would turn "leave the battery alone" into a forced
+    export — they are dropped instead if the device can't fit them.
+    Deliberately pure (no API calls) so it can be parity-tested against the
+    TypeScript classifier.
     """
-    groups = [g for g in groups if g.get("workMode") != remain_mode]
+    groups = [g for g in groups if not _is_remain_equivalent(g, remain_mode, min_soc_pct)]
     groups = split_groups_at_midnight(groups)
     room = max(1, max_groups - 1)
-    if len(groups) > room:
-        groups = _merge_groups(groups, room)
+
+    # Holds must never be absorbed into a neighbour: merging "don't touch the
+    # battery" into a Feedin/ForceDischarge window turns it into a forced
+    # export. If the device can't fit them all, drop the weakest holds instead
+    # (that degrades to plain SelfUse — the pre-hold behaviour — not to a
+    # forced discharge).
+    holds = [g for g in groups if _is_hold(g, min_soc_pct)]
+    others = [g for g in groups if not _is_hold(g, min_soc_pct)]
+    if len(others) > room:
+        others = _merge_groups(others, room)
+
+    budget = max(0, room - len(others))
+    if len(holds) > budget:
+        # Keep the holds protecting the most energy: highest floor first, then
+        # longest window.
+        keep = sorted(
+            holds,
+            key=lambda g: (round(g["extraParam"]["minSocOnGrid"]), _group_minutes(g)),
+            reverse=True,
+        )[:budget]
+        keep_ids = {id(g) for g in keep}
+        holds = [g for g in holds if id(g) in keep_ids]
+
+    keep_ids = {id(g) for g in others} | {id(g) for g in holds}
+    groups = [g for g in groups if id(g) in keep_ids]
     groups = groups + [build_remain_mode_group(remain_mode, min_soc_pct)]
     return groups
 

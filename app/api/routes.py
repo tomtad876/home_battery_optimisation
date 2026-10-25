@@ -14,7 +14,7 @@ from app.services.data_provider import (
     update_battery_config, get_battery_realtime, update_site_holiday
 )
 from app.services.optimisation_runs import persist_optimisation_run, mark_run_status
-from app.services.foxess import classify_optimiser_output, _merge_groups, classify_and_push
+from app.services.foxess import classify_optimiser_output, classify_and_push
 from app.services.event_detector import detect_events
 from app.models.demandevent import DemandEvent, DemandDayInventory
 from app.core.database import SessionLocal
@@ -520,7 +520,7 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
             init_api as _init_api,
             get_device_remain_mode,
             get_max_schedule_groups,
-            split_groups_at_midnight,
+            post_process_groups,
         )
         import foxesscloud.openapi as _f
 
@@ -539,29 +539,26 @@ def optimise_and_push(req: PushScheduleRequest, user: dict = Depends(verify_toke
             local_tz=site.get("timezone", "Europe/London"),
         )
 
-        # If the device's remain (default) mode matches a classified mode, that
-        # instruction is redundant — the inverter already falls back to that mode
-        # in gaps. Drop groups matching the remain mode, keep everything else.
-        # Fall back to SelfUse (FoxESS default) if the device can't report it —
-        # e.g. right after a push that wiped the remain-mode group.
+        # Fall back to SelfUse (FoxESS default) if the device can't report its
+        # remain mode — e.g. right after a push that wiped the remain-mode group.
+        # Then drop remain-equivalent instructions, split at midnight, merge to
+        # the device limit (holds are never merged into a forced group) and
+        # append the remain-mode group. Same pure pipeline the cron path uses.
         remain_mode = get_device_remain_mode(foxess_key, device_sn) or "SelfUse"
-        groups = [g for g in groups if g.get("workMode") != remain_mode]
-
-        # Split any group that spans midnight (FoxESS rejects cross-midnight periods)
-        groups = split_groups_at_midnight(groups)
-
-        if len(groups) > max_groups - 1:
-            groups = _merge_groups(groups, max_groups - 1)
+        groups = post_process_groups(
+            groups,
+            remain_mode=remain_mode,
+            min_soc_pct=batt_min_soc,
+            max_groups=max_groups,
+        )
 
         if req.preview:
-            # Preview mode: classify and return groups without pushing
+            # Preview mode: return instructions only (the remain group is
+            # reported separately in the response) and don't push.
             pushed = False
+            groups = [g for g in groups if not g.get("isRemainMode")]
         else:
-            # Always include the device's remain-mode group. set_schedule
-            # replaces the whole schedule — pushing without it wipes the remain
-            # mode and breaks remain-mode detection on the next push.
-            from app.services.foxess import build_remain_mode_group, push_schedule_to_device
-            groups = groups + [build_remain_mode_group(remain_mode or "SelfUse", batt_min_soc)]
+            from app.services.foxess import push_schedule_to_device
             # Push to device (retries transient 41203 "Operation timed out" etc.)
             result = push_schedule_to_device(foxess_key, device_sn, groups)
             if not result["pushed"]:

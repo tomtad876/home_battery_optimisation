@@ -4,6 +4,8 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 from app.services.foxess import (
     classify_optimiser_output,
+    prepare_schedule_groups,
+    post_process_groups,
     _merge_groups,
     split_groups_at_midnight,
     build_remain_mode_group,
@@ -344,6 +346,111 @@ class TestRemainModeGroup:
         assert g["workMode"] == "Feedin"
         assert g["isRemainMode"] is True
         assert g["extraParam"]["minSocOnGrid"] == 15
+
+
+class TestHoldInstruction:
+    """Battery idle while the grid serves the load must be a hold, not SelfUse.
+
+    2026-10-25 regression: the 14:00 plan said "import 0.09 kWh at -2p, keep
+    SOC at 100%", the classifier rendered it as SelfUse, post-processing
+    dropped it as remain-equivalent, and the inverter self-used the battery
+    down to 61% across the negative-price window.
+    """
+
+    @staticmethod
+    def _schedule(soc_pct=100.0, import_kwh=0.2, n_import=4):
+        rows = [(0.0, 0.0, import_kwh)] * n_import + [(0.0, 0.0, 0.0)] * 8
+        df = _make_schedule(rows)
+        df["soc_pct"] = soc_pct
+        df["price"] = -2.0
+        return df
+
+    def test_idle_while_importing_renders_as_hold(self):
+        groups = classify_optimiser_output(self._schedule(), local_tz="UTC")
+        holds = [g for g in groups if g["extraParam"]["minSocOnGrid"] == 100]
+        assert len(holds) == 1
+        assert holds[0]["workMode"] == FOXESS_MODE_SELF_USE
+        # It is a floor, not a force-charge — nothing should drive the battery.
+        assert "fdSoc" not in holds[0]["extraParam"]
+        assert "fdPwr" not in holds[0]["extraParam"]
+
+    def test_hold_survives_remain_mode_dedupe(self):
+        groups = prepare_schedule_groups(
+            self._schedule(),
+            from_time=datetime(2026, 9, 6, 0, 30, tzinfo=timezone.utc),
+            min_soc_pct=20.0,
+            max_soc_pct=100.0,
+            local_tz="UTC",
+            remain_mode=FOXESS_MODE_SELF_USE,
+        )
+        assert len(groups) == 2  # hold + remain
+        assert groups[0]["extraParam"]["minSocOnGrid"] == 100
+        assert groups[0]["workMode"] == FOXESS_MODE_SELF_USE
+        assert groups[-1]["isRemainMode"] is True
+
+    def test_hold_at_min_soc_is_dropped_as_redundant(self):
+        groups = prepare_schedule_groups(
+            self._schedule(soc_pct=20.0),
+            from_time=datetime(2026, 9, 6, 0, 30, tzinfo=timezone.utc),
+            min_soc_pct=20.0,
+            max_soc_pct=100.0,
+            local_tz="UTC",
+            remain_mode=FOXESS_MODE_SELF_USE,
+        )
+        assert len(groups) == 1
+        assert groups[0]["isRemainMode"] is True
+
+    def test_tiny_import_does_not_create_a_hold(self):
+        groups = classify_optimiser_output(
+            self._schedule(import_kwh=0.01), local_tz="UTC"
+        )
+        assert all(
+            g["extraParam"]["minSocOnGrid"] != 100 for g in groups
+        ), "below-threshold import must not fragment the schedule"
+
+    @staticmethod
+    def _group(sh, sm, eh, em, mode, floor=20, **extra):
+        return {
+            "startHour": sh, "startMinute": sm,
+            "endHour": eh, "endMinute": em,
+            "workMode": mode, "isRemainMode": False,
+            "extraParam": {"minSocOnGrid": floor, **extra},
+        }
+
+    def test_hold_is_dropped_not_merged_into_a_forced_group(self):
+        groups = [
+            self._group(14, 0, 15, 0, FOXESS_MODE_SELF_USE, floor=100),
+            self._group(15, 0, 16, 0, FOXESS_MODE_FEEDIN),
+            self._group(16, 0, 17, 0, FOXESS_MODE_FORCE_DISCHARGE, floor=25, fdSoc=25, fdPwr=2300),
+        ]
+        out = post_process_groups(
+            groups, remain_mode=FOXESS_MODE_SELF_USE, min_soc_pct=20.0, max_groups=3
+        )
+        # room = 2: the two real instructions fit, so the hold is dropped…
+        modes = [(g["workMode"], g["startHour"]) for g in out if not g["isRemainMode"]]
+        assert modes == [(FOXESS_MODE_FEEDIN, 15), (FOXESS_MODE_FORCE_DISCHARGE, 16)]
+        # …and no forced group has been widened over the hold window.
+        assert out[0]["startHour"] == 15
+
+    def test_hold_fits_when_there_is_room(self):
+        groups = [
+            self._group(14, 0, 15, 0, FOXESS_MODE_SELF_USE, floor=100),
+            self._group(15, 0, 16, 0, FOXESS_MODE_FEEDIN),
+        ]
+        out = post_process_groups(
+            groups, remain_mode=FOXESS_MODE_SELF_USE, min_soc_pct=20.0, max_groups=4
+        )
+        assert out[0]["workMode"] == FOXESS_MODE_SELF_USE
+        assert out[0]["extraParam"]["minSocOnGrid"] == 100
+
+    def test_discharging_into_load_is_still_self_use(self):
+        # net<0, no export: the optimiser wants the battery to serve the load.
+        schedule = _make_schedule([(-0.3, 0.0, 0.0)] * 4 + [(0.0, 0.0, 0.0)] * 8)
+        schedule["soc_pct"] = 80.0
+        groups = classify_optimiser_output(
+            schedule, local_tz="UTC", min_soc_pct=20.0
+        )
+        assert all(g["extraParam"]["minSocOnGrid"] == 20 for g in groups)
 
 
 class TestPushScheduleRetry:
