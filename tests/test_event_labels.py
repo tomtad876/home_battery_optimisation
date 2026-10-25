@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from app.main import app
 from app.core.auth import verify_token
-from app.services.event_detector import _suggest
+from app.services.event_detector import _suggest, _as_utc
 from app.api.routes import _inventory_to_dict
 from app.models.demandevent import DemandDayInventory
 
@@ -35,6 +35,44 @@ def mock_user_site():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+class TestLocalToUtc:
+    """Naive stored local times -> UTC, including the DST corner cases.
+
+    2026-10-25 (Sentry 3aeae13d): /events/detect 500'd with "Cannot infer dst
+    time from 2026-10-25 01:03:32" as soon as the 7-day window covered the
+    autumn fall-back hour.
+    """
+
+    def test_normal_time(self):
+        from datetime import datetime, timezone
+        import pandas as pd
+        # 12:00 local (BST) is 11:00 UTC.
+        assert _as_utc(pd.Timestamp("2026-09-01 12:00")) == datetime(
+            2026, 9, 1, 11, 0, tzinfo=timezone.utc
+        )
+
+    def test_ambiguous_fall_back_hour_does_not_raise(self):
+        from datetime import datetime, timezone
+        import pandas as pd
+        # 01:03 happens twice on 2026-10-25; take the first pass (BST) = 00:03Z.
+        assert _as_utc(pd.Timestamp("2026-10-25 01:03:32")) == datetime(
+            2026, 10, 25, 0, 3, 32, tzinfo=timezone.utc
+        )
+
+    def test_nonexistent_spring_forward_time_does_not_raise(self):
+        from datetime import timezone
+        import pandas as pd
+        # 01:30 does not exist on 2026-03-29 (clocks jump 01:00 -> 02:00).
+        out = _as_utc(pd.Timestamp("2026-03-29 01:30"))
+        assert out.tzinfo == timezone.utc
+
+    def test_already_aware_is_passed_through(self):
+        from datetime import datetime, timezone
+        import pandas as pd
+        ts = pd.Timestamp("2026-10-25 00:03:32", tz="UTC")
+        assert _as_utc(ts) == datetime(2026, 10, 25, 0, 3, 32, tzinfo=timezone.utc)
 
 
 class TestSuggest:

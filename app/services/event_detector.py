@@ -70,6 +70,25 @@ def _suggest(hod: float, mean_kw: float, peak_kw: float, flatness: float,
     return ("dishwasher", 0.40)
 
 
+def _as_utc(ts: pd.Timestamp) -> datetime:
+    """Naive stored London wall-clock timestamp -> aware UTC.
+
+    `historic_energy_data.period_end` is stored as naive *local* time. On the
+    autumn change 01:00-02:00 happens twice, and pandas refuses to guess, which
+    raised "Cannot infer dst time from 2026-10-25 01:03:32" and 500'd
+    /events/detect (Sentry 2026-10-25 17:42). The ingest keeps only one pass of
+    that hour (UNIQUE on site_id/period_end/variable), so take the first (BST);
+    timestamps in the spring-forward gap are shifted forward.
+    """
+    if ts.tzinfo is not None:
+        return ts.to_pydatetime().astimezone(timezone.utc)
+    return (
+        ts.tz_localize(LONDON, ambiguous=True, nonexistent="shift_forward")
+        .to_pydatetime()
+        .astimezone(timezone.utc)
+    )
+
+
 def _overlap_fraction(a0, a1, b0, b1) -> float:
     """Fraction of [a0,a1] covered by [b0,b1] (both tz-aware datetimes)."""
     if a1 <= b0 or b1 <= a0:
@@ -153,8 +172,8 @@ def detect_events(site_id: str, days: int = 7) -> list[dict]:
         hod = sub["t"].dt.hour.iloc[0] + sub["t"].dt.minute.iloc[0] / 60
         start_local = sub["t"].min()
         end_local = sub["t"].max() + pd.Timedelta(minutes=5)
-        start_dt = start_local.tz_localize(LONDON).astimezone(timezone.utc)
-        end_dt = end_local.tz_localize(LONDON).astimezone(timezone.utc)
+        start_dt = _as_utc(start_local)
+        end_dt = _as_utc(end_local)
 
         # Skip if already covered by an existing (labelled) event.
         if any(_overlap_fraction(start_dt, end_dt, s, e) > 0.5 for s, e in existing_spans):
@@ -163,7 +182,7 @@ def detect_events(site_id: str, days: int = 7) -> list[dict]:
         # Sparkline window: the event ± 30 minutes.
         win = df.iloc[max(0, i0 - TRACE_PAD_SAMPLES):i1 + TRACE_PAD_SAMPLES + 1]
         trace = [
-            {"t": t.tz_localize(LONDON).astimezone(timezone.utc).isoformat(), "kw": round(float(k), 2)}
+            {"t": _as_utc(t).isoformat(), "kw": round(float(k), 2)}
             for t, k in zip(win["t"], win["kw"])
         ]
 
