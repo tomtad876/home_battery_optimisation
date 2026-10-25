@@ -7,7 +7,8 @@ class HistoricEnergyData(Base):
     __tablename__ = "historic_energy_data"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    period_end = Column(DateTime, nullable=False)
+    # timestamptz since the 2026-10-26 UTC migration (was naive local)
+    period_end = Column(DateTime(timezone=True), nullable=False)
     variable = Column(String, nullable=True)
     unit = Column(String, nullable=True)
     name = Column(String, nullable=True)

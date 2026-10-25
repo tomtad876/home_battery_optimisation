@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.43.4";
 import { Md5 } from "npm:ts-md5";
 import { decryptProviderConfig } from "../shared/encryption.ts";
+import { foxessTimeToUtcIso } from "../shared/foxess-time.ts";
 
 // Variables pulled from the FoxESS history API (all requested in one call).
 // SoC is stored so efficiency / battery-health can be derived from our own
@@ -82,9 +83,15 @@ async function fetchWindow(
   for (const entry of data?.result?.[0]?.datas || []) {
     for (const d of entry?.data || []) {
       if (d?.value == null || !d?.time) continue;
+      // period_end is timestamptz — send a real instant, not the local string.
+      const periodEnd = foxessTimeToUtcIso(String(d.time));
+      if (!periodEnd) {
+        console.warn(`fetch-demand: unparseable FoxESS time "${d.time}" — skipping`);
+        continue;
+      }
       intervals.push({
         id: crypto.randomUUID(),
-        period_end: d.time,
+        period_end: periodEnd,
         variable: entry.variable,
         unit: entry.unit,
         name: entry.name,

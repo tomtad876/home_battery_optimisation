@@ -101,9 +101,13 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         ),
 
         half_hour_history AS (
+            -- Bucket on the *local* half-hour-of-day: the forecast side below
+            -- buckets the same way, so the household's 18:00 peak lines up with
+            -- historical 18:00 all year (it was UTC-vs-local drift before the
+            -- 2026-10-26 UTC migration: an hour out through BST).
             SELECT
-                floor(date_part('hour', period_end) * 2 
-                    + date_part('minute', period_end) / 30) AS hh_slot,
+                floor(date_part('hour', period_end AT TIME ZONE 'Europe/London') * 2
+                    + date_part('minute', period_end AT TIME ZONE 'Europe/London') / 30) AS hh_slot,
                 AVG(value_kw) / 2.0 AS avg_kwh,
                 -- Baseload floor: the 20th percentile of the 5-min samples in
                 -- this half-hour-of-day slot over the trailing 7 days. This is
@@ -119,8 +123,8 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         -- sees tomorrow's typical shape (cheap overnight, evening peak).
         price_history AS (
             SELECT
-                floor(date_part('hour', period_end) * 2
-                    + date_part('minute', period_end) / 30) AS hh_slot,
+                floor(date_part('hour', period_end AT TIME ZONE 'Europe/London') * 2
+                    + date_part('minute', period_end AT TIME ZONE 'Europe/London') / 30) AS hh_slot,
                 AVG(import_price) AS avg_import_price,
                 AVG(export_price) AS avg_export_price
             FROM public.agile_rates
@@ -135,7 +139,8 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         forecast_series AS (
             SELECT 
                 gs AS period_end,
-                floor(date_part('hour', gs) * 2 + date_part('minute', gs) / 30) AS hh_slot
+                floor(date_part('hour', gs AT TIME ZONE 'Europe/London') * 2
+                      + date_part('minute', gs AT TIME ZONE 'Europe/London') / 30) AS hh_slot
             FROM generate_series(
                 date_trunc('hour', now()) + interval '30 minutes',
                 now() + interval '48 hours',

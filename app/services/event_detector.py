@@ -70,23 +70,19 @@ def _suggest(hod: float, mean_kw: float, peak_kw: float, flatness: float,
     return ("dishwasher", 0.40)
 
 
-def _as_utc(ts: pd.Timestamp) -> datetime:
-    """Naive stored London wall-clock timestamp -> aware UTC.
+def _as_utc(ts) -> datetime:
+    """Timestamp -> aware UTC.
 
-    `historic_energy_data.period_end` is stored as naive *local* time. On the
-    autumn change 01:00-02:00 happens twice, and pandas refuses to guess, which
-    raised "Cannot infer dst time from 2026-10-25 01:03:32" and 500'd
-    /events/detect (Sentry 2026-10-25 17:42). The ingest keeps only one pass of
-    that hour (UNIQUE on site_id/period_end/variable), so take the first (BST);
-    timestamps in the spring-forward gap are shifted forward.
+    `historic_energy_data.period_end` became timestamptz (stored UTC) in the
+    2026-10-26 migration. Before that it was naive *local* time, and the autumn
+    change made 01:00-02:00 ambiguous — the cause of the 2026-10-25
+    "Cannot infer dst time" 500 on /events/detect. Anything still naive is
+    treated as UTC; local time is only applied for display.
     """
+    ts = pd.Timestamp(ts)
     if ts.tzinfo is not None:
         return ts.to_pydatetime().astimezone(timezone.utc)
-    return (
-        ts.tz_localize(LONDON, ambiguous=True, nonexistent="shift_forward")
-        .to_pydatetime()
-        .astimezone(timezone.utc)
-    )
+    return ts.to_pydatetime().replace(tzinfo=timezone.utc)
 
 
 def _overlap_fraction(a0, a1, b0, b1) -> float:
@@ -106,8 +102,8 @@ def detect_events(site_id: str, days: int = 7) -> list[dict]:
     """
     session = SessionLocal()
     try:
-        # Baseline window: last 30 days (period_end is stored naive-local).
-        cutoff = (datetime.now(LONDON) - timedelta(days=BASELINE_DAYS)).replace(tzinfo=None)
+        # Baseline window: last 30 days (period_end is timestamptz, UTC).
+        cutoff = datetime.now(timezone.utc) - timedelta(days=BASELINE_DAYS)
         df = pd.read_sql_query(
             text("""
                 SELECT period_end AS t, value AS kw
@@ -118,18 +114,17 @@ def detect_events(site_id: str, days: int = 7) -> list[dict]:
             session.bind,
             params={"sid": site_id, "cutoff": cutoff},
         )
+        if not df.empty:
+            df["t"] = pd.to_datetime(df["t"], utc=True)
 
-        report_start_local = (datetime.now(LONDON) - timedelta(days=days)).replace(tzinfo=None)
+        report_start = datetime.now(timezone.utc) - timedelta(days=days)
         existing = pd.read_sql_query(
             text("""
                 SELECT start_time, end_time FROM demand_events
                 WHERE site_id = :sid AND start_time >= :since
             """),
             session.bind,
-            params={
-                "sid": site_id,
-                "since": report_start_local.replace(tzinfo=LONDON).astimezone(timezone.utc),
-            },
+            params={"sid": site_id, "since": report_start},
         )
     finally:
         session.close()
@@ -169,11 +164,12 @@ def detect_events(site_id: str, days: int = 7) -> list[dict]:
         kw = sub["kw"]
         mean_kw = float(kw.mean())
         flatness = float(kw.std() / mean_kw) if mean_kw > 0 else 0.0
-        hod = sub["t"].dt.hour.iloc[0] + sub["t"].dt.minute.iloc[0] / 60
-        start_local = sub["t"].min()
-        end_local = sub["t"].max() + pd.Timedelta(minutes=5)
-        start_dt = _as_utc(start_local)
-        end_dt = _as_utc(end_local)
+        start_dt = _as_utc(sub["t"].min())
+        end_dt = _as_utc(sub["t"].max() + pd.Timedelta(minutes=5))
+        # Display and the appliance heuristics work on local clock time.
+        start_local = start_dt.astimezone(LONDON)
+        end_local = end_dt.astimezone(LONDON)
+        hod = start_local.hour + start_local.minute / 60
 
         # Skip if already covered by an existing (labelled) event.
         if any(_overlap_fraction(start_dt, end_dt, s, e) > 0.5 for s, e in existing_spans):

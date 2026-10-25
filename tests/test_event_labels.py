@@ -37,42 +37,42 @@ def client():
     return TestClient(app)
 
 
-class TestLocalToUtc:
-    """Naive stored local times -> UTC, including the DST corner cases.
+class TestAsUtc:
+    """Stored timestamps -> aware UTC after the 2026-10-26 UTC migration.
 
     2026-10-25 (Sentry 3aeae13d): /events/detect 500'd with "Cannot infer dst
-    time from 2026-10-25 01:03:32" as soon as the 7-day window covered the
-    autumn fall-back hour.
+    time" because `period_end` was naive *local* and 01:00-02:00 happens twice.
+    It is timestamptz now; naive leftovers are read as UTC.
     """
 
-    def test_normal_time(self):
+    def test_naive_is_read_as_utc(self):
         from datetime import datetime, timezone
         import pandas as pd
-        # 12:00 local (BST) is 11:00 UTC.
-        assert _as_utc(pd.Timestamp("2026-09-01 12:00")) == datetime(
-            2026, 9, 1, 11, 0, tzinfo=timezone.utc
-        )
-
-    def test_ambiguous_fall_back_hour_does_not_raise(self):
-        from datetime import datetime, timezone
-        import pandas as pd
-        # 01:03 happens twice on 2026-10-25; take the first pass (BST) = 00:03Z.
         assert _as_utc(pd.Timestamp("2026-10-25 01:03:32")) == datetime(
-            2026, 10, 25, 0, 3, 32, tzinfo=timezone.utc
+            2026, 10, 25, 1, 3, 32, tzinfo=timezone.utc
         )
 
-    def test_nonexistent_spring_forward_time_does_not_raise(self):
-        from datetime import timezone
+    def test_offset_is_normalised(self):
+        from datetime import datetime, timezone
         import pandas as pd
-        # 01:30 does not exist on 2026-03-29 (clocks jump 01:00 -> 02:00).
-        out = _as_utc(pd.Timestamp("2026-03-29 01:30"))
-        assert out.tzinfo == timezone.utc
+        # 11:03 BST is 10:03Z.
+        assert _as_utc(pd.Timestamp("2026-07-15 11:03:33+01:00")) == datetime(
+            2026, 7, 15, 10, 3, 33, tzinfo=timezone.utc
+        )
 
-    def test_already_aware_is_passed_through(self):
+    def test_aware_utc_is_passed_through(self):
         from datetime import datetime, timezone
         import pandas as pd
         ts = pd.Timestamp("2026-10-25 00:03:32", tz="UTC")
         assert _as_utc(ts) == datetime(2026, 10, 25, 0, 3, 32, tzinfo=timezone.utc)
+
+    def test_both_passes_of_the_ambiguous_hour_are_distinct(self):
+        from datetime import timezone
+        import pandas as pd
+        a = _as_utc(pd.Timestamp("2026-10-25 00:03:32", tz="UTC"))
+        b = _as_utc(pd.Timestamp("2026-10-25 01:03:32", tz="UTC"))
+        assert (b - a).total_seconds() == 3600
+        assert a.tzinfo == timezone.utc and b.tzinfo == timezone.utc
 
 
 class TestSuggest:
