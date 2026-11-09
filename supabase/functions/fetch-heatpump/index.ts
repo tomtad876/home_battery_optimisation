@@ -135,6 +135,11 @@ serve(async (_req: Request) => {
           BACKEND_URL,
           `query {
             heatPumpControllerStatus(accountNumber: "${account}", euid: "${euid}") {
+              sensors {
+                code
+                connectivity { online retrievedAt }
+                telemetry { temperatureInCelsius humidityPercentage voltage retrievedAt }
+              }
               zones { zone telemetry { setpointInCelsius mode relaySwitchedOn heatDemand retrievedAt } }
             }
             heatPumpLivePerformance(accountNumber: "${account}", euid: "${euid}") {
@@ -144,8 +149,16 @@ serve(async (_req: Request) => {
               seasonalCoefficientOfPerformance heatOutput { value unit } energyInput { value unit } readAt
             }
             heatPumpControllerConfiguration(accountNumber: "${account}", euid: "${euid}") {
-              heatPump { model }
-              zones { configuration { code zoneType } }
+              controller { state connected }
+              heatPump {
+                model
+                heatingFlowTemperature { currentTemperature { value unit } }
+                weatherCompensation {
+                  enabled
+                  currentRange { minimum { value unit } maximum { value unit } }
+                }
+              }
+              zones { configuration { code zoneType enabled primarySensor } }
             }
           }`,
           token,
@@ -160,15 +173,32 @@ serve(async (_req: Request) => {
         }
 
         const statusZones = data?.heatPumpControllerStatus?.zones ?? [];
-        const configZones = data?.heatPumpControllerConfiguration?.zones ?? [];
+        const statusSensors = data?.heatPumpControllerStatus?.sensors ?? [];
+        const controllerConfig = data?.heatPumpControllerConfiguration;
+        const heatPump = controllerConfig?.heatPump;
+        const configZones = controllerConfig?.zones ?? [];
         const water = pickWaterZone(statusZones, configZones);
+        const powerIn = num(live?.powerInput?.value);
+
+        // The room temperature lives on the Cosy Pods, not the zone.
+        const sensors = statusSensors.map((s: any) => ({
+          code: s?.code ?? null,
+          temperature_c: num(s?.telemetry?.temperatureInCelsius),
+          humidity: num(s?.telemetry?.humidityPercentage),
+          online: s?.connectivity?.online ?? null,
+          read_at: s?.telemetry?.retrievedAt ?? s?.connectivity?.retrievedAt ?? null,
+        }));
+
+        const weatherComp = heatPump?.weatherCompensation;
 
         const row = {
           site_id: battery.site_id,
           read_at: readAt,
-          power_input_kw: num(live?.powerInput?.value),
+          power_input_kw: powerIn,
           heat_output_kw: num(live?.heatOutput?.value),
-          cop: num(live?.coefficientOfPerformance),
+          // The live COP is meaningless when the pump is idle (it reports a
+          // stale/garbage number, e.g. 5.1 at 0 kW). Store null instead.
+          cop: powerIn != null && powerIn > 0.01 ? num(live?.coefficientOfPerformance) : null,
           outdoor_temp_c: num(live?.outdoorTemperature?.value),
           lifetime_energy_input_kwh: num(lifetime?.energyInput?.value),
           lifetime_heat_output_kwh: num(lifetime?.heatOutput?.value),
@@ -176,6 +206,16 @@ serve(async (_req: Request) => {
           water_mode: water.mode,
           water_setpoint_c: water.setpoint,
           zones: statusZones,
+          sensors,
+          flow_temp_c: num(heatPump?.heatingFlowTemperature?.currentTemperature?.value),
+          weather_comp_enabled: weatherComp?.enabled ?? null,
+          weather_comp_min_c: num(weatherComp?.currentRange?.minimum?.value),
+          weather_comp_max_c: num(weatherComp?.currentRange?.maximum?.value),
+          controller_state: Array.isArray(controllerConfig?.controller?.state)
+            ? controllerConfig.controller.state.join(',')
+            : (controllerConfig?.controller?.state ?? null),
+          connected: controllerConfig?.controller?.connected ?? null,
+          model: heatPump?.model ?? null,
         };
 
         const up = await client.from("heat_pump_data").upsert(row, { onConflict: "site_id,read_at" });
