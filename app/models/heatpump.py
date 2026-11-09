@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, DateTime, Float, ForeignKey, String, UniqueConstraint, text
+from sqlalchemy import Column, Boolean, DateTime, Float, ForeignKey, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from app.core.database import Base
 
@@ -46,4 +46,13 @@ class HeatPumpData(Base):
     water_mode = Column(String, nullable=True)
     water_setpoint_c = Column(Float, nullable=True)
     zones = Column(JSONB, nullable=True)
+    # Room temperature lives on the Cosy Pods, not the zone; flow temp drives COP.
+    sensors = Column(JSONB, nullable=True)
+    flow_temp_c = Column(Float, nullable=True)
+    weather_comp_enabled = Column(Boolean, nullable=True)
+    weather_comp_min_c = Column(Float, nullable=True)
+    weather_comp_max_c = Column(Float, nullable=True)
+    controller_state = Column(String, nullable=True)
+    connected = Column(Boolean, nullable=True)
+    model = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=text("now()"))
