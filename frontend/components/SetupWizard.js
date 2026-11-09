@@ -4,6 +4,26 @@ import { apiFetch, friendlyError } from '@/lib/api'
 
 const STEPS = ['Site', 'Battery', 'Tariff', 'Credentials']
 
+// Octopus distribution regions — rates differ per region, so the tariff stores
+// the code. Shared shape with the Settings page.
+const REGIONS = [
+  ['A', 'East England'],
+  ['B', 'East Midlands'],
+  ['C', 'London'],
+  ['D', 'Merseyside & North Wales'],
+  ['E', 'West Midlands'],
+  ['F', 'North East'],
+  ['G', 'North West'],
+  ['H', 'Southern'],
+  ['J', 'South East'],
+  ['K', 'South Wales'],
+  ['L', 'South West'],
+  ['M', 'Yorkshire'],
+  ['N', 'South Scotland'],
+  ['P', 'North Scotland'],
+]
+
+
 export default function SetupWizard({ onComplete }) {
   const [step, setStep] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -239,9 +259,9 @@ export default function SetupWizard({ onComplete }) {
             <select value={tariffData.import_type}
               onChange={(e) => setTariffData({ ...tariffData, import_type: e.target.value })}
               className={inputClass}>
-              <option value="agile">Octopus Agile</option>
-              <option value="fixed">Fixed Rate</option>
-              <option value="time_of_use">Time of Use</option>
+              <option value="agile">Octopus Agile (half-hourly)</option>
+              <option value="cosy">Octopus Cosy (8 cheap hours)</option>
+              <option value="fixed">Fixed / standard rate</option>
             </select>
           </div>
           <div>
@@ -250,8 +270,7 @@ export default function SetupWizard({ onComplete }) {
               onChange={(e) => setTariffData({ ...tariffData, export_type: e.target.value })}
               className={inputClass}>
               <option value="agile">Octopus Agile Outgoing</option>
-              <option value="fixed">Fixed Export</option>
-              <option value="none">No Export</option>
+              <option value="fixed">Fixed SEG rate</option>
             </select>
           </div>
           <div>
@@ -259,16 +278,9 @@ export default function SetupWizard({ onComplete }) {
             <select value={tariffData.region_code}
               onChange={(e) => setTariffData({ ...tariffData, region_code: e.target.value })}
               className={inputClass}>
-              <option value="A">A - Scotland</option>
-              <option value="B">B - Southern Scotland</option>
-              <option value="C">C - North England</option>
-              <option value="D">D - South Wales</option>
-              <option value="E">E - Midlands</option>
-              <option value="F">F - South England</option>
-              <option value="G">G - London</option>
-              <option value="H">H - Southern England</option>
-              <option value="J">J - North Scotland</option>
-              <option value="K">K - Central Scotland</option>
+              {REGIONS.map(([code, name]) => (
+                <option key={code} value={code}>{code} — {name}</option>
+              ))}
             </select>
           </div>
           <button onClick={handleCreateTariff} disabled={loading}

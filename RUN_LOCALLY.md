@@ -66,7 +66,7 @@ You should see:
 3. **Initial SOC** – Set to current battery state (e.g. 50%)
 4. **SOC Bounds** – Min 20%, Max 90% (default, adjust if needed)
 5. **Power Limits** – Charge/discharge power (default 3 kW each)
-6. **Export Price** – Pulled dynamically from Agile outgoing rates (no manual entry needed)
+6. **Export Price** – Pulled dynamically from Agile outgoing rates (or a flat SEG rate if configured; no manual entry needed)
 
 ### Click "Optimise"
 

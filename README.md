@@ -12,7 +12,7 @@ Browser (Next.js, Vercel)
   Python API (FastAPI, Render)
    ↓
 ├─ Solcast API (solar forecast)
-├─ FoxESS API (demand history + Agile prices + battery control)
+├─ Octopus public API (tariff unit rates: Agile, Cosy)
 └─ Supabase Edge Functions (scheduled data fetch + auto-push)
 ```
 
@@ -207,20 +207,39 @@ home_battery_optimisation/
 
 ## Current Scope (live on prod 2026-09-06)
 
-- ✅ **Tariff:** Octopus Agile import + export
+- ✅ **Tariff:** switchable import (Agile / Cosy / fixed) + export (Agile Outgoing / fixed SEG)
 - ✅ **Solar:** Solcast 30-min forecasts
 - ✅ **Demand:** FoxESS 7-day average (time-of-day profile)
 - ✅ **Optimisation:** Linear programming (global optimum, not greedy)
 - ✅ **Push:** Classify + push schedule to FoxESS inverter (manual + auto-push cron)
 - ✅ **Multi-tenant:** Supabase JWT auth, per-user sites/batteries/credentials
 - ✅ **Setup wizard:** 4-step onboarding (site → battery → tariff → credentials)
-- ✅ **Settings:** Battery config, API credentials, auto-push toggle
+- ✅ **Settings:** Battery config, tariff switching, API credentials, auto-push toggle
 - ✅ **Edge Functions:** Scheduled data fetch + background optimise-and-push
+
+## Tariffs
+
+The optimiser consumes a pence/kWh vector, so tariffs are a pricing layer, not an
+optimiser change. One tariff row per site (`tariffs`), switched in Settings.
+
+| Import | Price source |
+| --- | --- |
+| `agile` | `agile_rates` (published half-hourly), 7-day time-of-day average beyond publication |
+| `cosy` | Octopus public product API, per region; falls back to the rates saved on the tariff row. Cheap 04:00–07:00, 13:00–16:00, 22:00–00:00; peak 16:00–19:00 (Europe/London) |
+| `fixed` | Flat rate from config |
+
+Export is independent: `agile` (Outgoing Agile) or `fixed` (flat SEG). `is_synthetic`
+marks any slot where a leg is estimated, and auto-push refuses to send the
+estimated tail to the inverter.
+
+Cosy rates differ by region (E: 13.59/27.72/41.58; L: 14.11/28.78/43.17, Nov 2026)
+and change at cap reviews. The app fetches the live published rates; the saved
+numbers are only the offline fallback.
 
 ## Known Limitations
 
 - **Demand forecast:** Simple 7-day average. Upgrade to ML (Prophet, LSTM) for better accuracy
-- **Tariff:** No support for Economy 7 or other non-Agile tariff structures yet
+- **Tariff:** No Economy 7/Heat Pump tariff split yet; Cosy windows are fixed (not user-editable in the UI)
 - **Optimiser:** No battery health degradation or thermal constraints
 - **Round-trip efficiency:** Currently ignores charge/discharge losses (planned fix)
 

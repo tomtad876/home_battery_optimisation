@@ -2,6 +2,25 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { apiFetch, friendlyError } from '@/lib/api';
 
+// Octopus distribution regions. Rates differ per region, so the tariff stores
+// the code rather than assuming the app's historical default (E).
+const REGIONS = [
+  ['A', 'East England'],
+  ['B', 'East Midlands'],
+  ['C', 'London'],
+  ['D', 'Merseyside & North Wales'],
+  ['E', 'West Midlands'],
+  ['F', 'North East'],
+  ['G', 'North West'],
+  ['H', 'Southern'],
+  ['J', 'South East'],
+  ['K', 'South Wales'],
+  ['L', 'South West'],
+  ['M', 'Yorkshire'],
+  ['N', 'South Scotland'],
+  ['P', 'North Scotland'],
+];
+
 // Settings is split into three independent cards, each with its own save. The
 // automatic-push and holiday toggles used to live inside the credentials form,
 // so flipping a toggle looked like it did nothing until you clicked "Save
@@ -30,6 +49,17 @@ export default function SettingsPage() {
   const [autoPushEnabled, setAutoPushEnabled] = useState(false);
   const [holidayMode, setHolidayMode] = useState(false);
   const [holidayUntil, setHolidayUntil] = useState('');
+
+  const [importType, setImportType] = useState('agile');
+  const [exportType, setExportType] = useState('agile');
+  const [regionCode, setRegionCode] = useState('E');
+  const [cosyProduct, setCosyProduct] = useState('COSY-22-12-08');
+  const [cosyCheap, setCosyCheap] = useState('13.59');
+  const [cosyDay, setCosyDay] = useState('27.72');
+  const [cosyPeak, setCosyPeak] = useState('41.58');
+  const [flatImport, setFlatImport] = useState('24.5');
+  const [flatExport, setFlatExport] = useState('15');
+  const [liveRates, setLiveRates] = useState(null);
 
   useEffect(() => {
     loadCredentials();
@@ -103,6 +133,27 @@ export default function SettingsPage() {
         setAutoPushEnabled(battery.auto_push_enabled ?? false);
       } else {
         setMessage({ type: 'error', text: 'No battery found. Please complete the setup wizard first.' });
+      }
+
+      // Tariff lives on its own row (one per site). 404 = not configured yet;
+      // the backend then behaves as Agile, which is the historical default.
+      try {
+        const data = await apiFetch('/tariff?include_live=true', { accessToken: session.access_token });
+        const t = data?.tariff;
+        setLiveRates(data?.live_rates ?? null);
+        if (t) {
+          setImportType(t.import_type || 'agile');
+          setExportType(t.export_type || 'agile');
+          setRegionCode(t.region_code || 'E');
+          setCosyProduct(t.import?.product_code || 'COSY-22-12-08');
+          setCosyCheap(String(t.import?.rates?.cheap_pence ?? '13.59'));
+          setCosyDay(String(t.import?.rates?.day_pence ?? '27.72'));
+          setCosyPeak(String(t.import?.rates?.peak_pence ?? '41.58'));
+          setFlatImport(String(t.import?.flat_pence ?? '24.5'));
+          setFlatExport(String(t.export?.flat_pence ?? '15'));
+        }
+      } catch (err) {
+        if (err?.status !== 404) throw err;
       }
     } catch (err) {
       setMessage({ type: 'error', text: friendlyError(err, 'Failed to load settings.') });
@@ -188,6 +239,38 @@ export default function SettingsPage() {
         body: credBody,
       });
       setMessage({ type: 'success', text: 'API credentials saved.' });
+    });
+  };
+
+  const saveTariff = (e) => {
+    e.preventDefault();
+    return withSession('tariff', async (accessToken) => {
+      const data = await apiFetch('/tariff', {
+        method: 'PUT',
+        accessToken,
+        body: {
+          import_type: importType,
+          export_type: exportType,
+          config_json: {
+            region_code: regionCode,
+            import: {
+              product_code: cosyProduct,
+              rates: {
+                cheap_pence: parseFloat(cosyCheap) || 0,
+                day_pence: parseFloat(cosyDay) || 0,
+                peak_pence: parseFloat(cosyPeak) || 0,
+              },
+              flat_pence: parseFloat(flatImport) || 24.5,
+            },
+            export: { flat_pence: parseFloat(flatExport) || 15 },
+          },
+        },
+      });
+      setLiveRates(data?.live_rates ?? null);
+      setMessage({
+        type: 'success',
+        text: `Tariff saved — import: ${importType}, export: ${exportType}. The next plan uses it.`,
+      });
     });
   };
 
@@ -304,7 +387,94 @@ export default function SettingsPage() {
         </button>
       </form>
 
-      {/* 3. API credentials */}
+      {/* 3. Tariff — import and export are independent choices */}
+      <form onSubmit={saveTariff} style={styles.card}>
+        <h2 style={{ ...styles.sectionTitle, marginTop: 0 }}>Tariff</h2>
+        <p style={{ ...styles.toggleHint, marginBottom: '4px' }}>
+          The optimiser plans against whatever prices this tariff produces. Import and export are
+          chosen separately — Cosy import with Outgoing Agile export is a valid combination.
+        </p>
+
+        <label style={styles.label}>Import tariff</label>
+        <select value={importType} onChange={(e) => setImportType(e.target.value)} style={styles.input}>
+          <option value="agile">Agile Octopus (half-hourly)</option>
+          <option value="cosy">Cosy Octopus (8 cheap hours)</option>
+          <option value="fixed">Fixed / standard rate</option>
+        </select>
+
+        {importType === 'cosy' && (
+          <>
+            <div style={styles.row}>
+              <div style={styles.halfField}>
+                <label style={styles.label}>Region</label>
+                <select value={regionCode} onChange={(e) => setRegionCode(e.target.value)} style={styles.input}>
+                  {REGIONS.map(([code, name]) => (
+                    <option key={code} value={code}>{code} — {name}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={styles.halfField}>
+                <label style={styles.label}>Product code</label>
+                <input type="text" value={cosyProduct} onChange={(e) => setCosyProduct(e.target.value)} style={styles.input} />
+              </div>
+            </div>
+
+            <div style={styles.row}>
+              <div style={styles.halfField}>
+                <label style={styles.label}>Cheap (p/kWh)</label>
+                <input type="number" step="0.01" value={cosyCheap} onChange={(e) => setCosyCheap(e.target.value)} style={styles.input} />
+              </div>
+              <div style={styles.halfField}>
+                <label style={styles.label}>Day (p/kWh)</label>
+                <input type="number" step="0.01" value={cosyDay} onChange={(e) => setCosyDay(e.target.value)} style={styles.input} />
+              </div>
+              <div style={styles.halfField}>
+                <label style={styles.label}>Peak (p/kWh)</label>
+                <input type="number" step="0.01" value={cosyPeak} onChange={(e) => setCosyPeak(e.target.value)} style={styles.input} />
+              </div>
+            </div>
+
+            <p style={styles.toggleHint}>
+              Cheap: 04:00–07:00, 13:00–16:00, 22:00–00:00 · Peak: 16:00–19:00 (local time).
+              Live rates are fetched from Octopus for every plan; the three rates above are the
+              fallback if that fetch fails.
+            </p>
+            {liveRates?.distinct_pence?.length > 0 && (
+              <p style={styles.toggleHint}>
+                Octopus currently publishes {liveRates.distinct_pence.map((p) => `${p}p`).join(' / ')} for
+                region {liveRates.region_code} ({liveRates.product_code}).
+              </p>
+            )}
+          </>
+        )}
+
+        {importType === 'fixed' && (
+          <>
+            <label style={styles.label}>Flat import rate (p/kWh)</label>
+            <input type="number" step="0.01" value={flatImport} onChange={(e) => setFlatImport(e.target.value)} style={styles.input} />
+          </>
+        )}
+
+        <label style={styles.label}>Export tariff</label>
+        <select value={exportType} onChange={(e) => setExportType(e.target.value)} style={styles.input}>
+          <option value="agile">Agile Outgoing (half-hourly)</option>
+          <option value="fixed">Fixed SEG rate</option>
+        </select>
+
+        {exportType === 'fixed' && (
+          <>
+            <label style={styles.label}>Flat export rate (p/kWh)</label>
+            <input type="number" step="0.01" value={flatExport} onChange={(e) => setFlatExport(e.target.value)} style={styles.input} />
+          </>
+        )}
+
+        <button type="submit" disabled={savingSection === 'tariff'} style={{ ...styles.button, opacity: savingSection === 'tariff' ? 0.6 : 1 }}>
+          {savingSection === 'tariff' ? 'Saving…' : 'Save tariff'}
+        </button>
+      </form>
+
+      {/* 4. API credentials */}
+
       <form onSubmit={saveCredentials} style={styles.card}>
         <h2 style={{ ...styles.sectionTitle, marginTop: 0 }}>API Credentials</h2>
         <p style={{ ...styles.toggleHint, marginBottom: '4px' }}>

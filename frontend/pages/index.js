@@ -11,6 +11,9 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 // cannot leak into a production deployment.
 const IS_DEV = process.env.NODE_ENV === 'development'
 
+// Dashboard chip labels for the active tariff.
+const TARIFF_LABELS = { agile: 'Agile', cosy: 'Cosy', fixed: 'Fixed' }
+
 export default function Home() {
   const [schedule, setSchedule] = useState(null)
   const [summary, setSummary] = useState(null)
@@ -19,6 +22,7 @@ export default function Home() {
   const [user, setUser] = useState(null)
   const [site, setSite] = useState(null)
   const [battery, setBattery] = useState(null)
+  const [tariff, setTariff] = useState(null)
   const [batteryLoading, setBatteryLoading] = useState(true)
   const [siteLoading, setSiteLoading] = useState(true)
   const [siteError, setSiteError] = useState(null)
@@ -84,6 +88,10 @@ export default function Home() {
           .then((b) => setBattery(b?.battery ?? null))
           .catch(() => {})
           .finally(() => setBatteryLoading(false))
+        // Tariff chip. Non-fatal — the dashboard works without it.
+        apiFetch('/tariff', { accessToken })
+          .then((t) => setTariff(t?.tariff ?? null))
+          .catch(() => {})
       }
     } catch (err) {
       setSite(null)
@@ -366,6 +374,13 @@ export default function Home() {
                   className={`text-xs px-3 py-1 rounded-full border ${holidayActive ? 'bg-signal/15 border-signal/40 text-signal' : 'bg-surface-2 border-hairline text-ink-muted'}`}
                 >
                   Holiday mode: {holidayActive ? 'ON' : 'OFF'}
+                </a>
+                <a
+                  href="/settings"
+                  title="Change in Settings"
+                  className={`text-xs px-3 py-1 rounded-full border ${tariff?.import_type === 'cosy' ? 'bg-signal/15 border-signal/40 text-signal' : 'bg-surface-2 border-hairline text-ink-muted'}`}
+                >
+                  Tariff: {TARIFF_LABELS[tariff?.import_type] ?? '…'} in / {TARIFF_LABELS[tariff?.export_type] ?? '…'} out
                 </a>
                 {holidayActive && site.holiday_until && (
                   <span className="text-xs text-ink-faint">
