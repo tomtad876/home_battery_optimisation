@@ -2,9 +2,13 @@
 Linear programming battery optimiser using CVXPY.
 Minimises cost subject to energy balance, SOC bounds, and power constraints.
 """
+import logging
+
 import cvxpy as cp
 import pandas as pd
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 # Round-trip efficiency defaults, empirically fitted from FoxESS history
@@ -60,6 +64,75 @@ def resolve_salvage_value_pence(
     if salvage_value_pence is not None:
         return float(salvage_value_pence)
     return _default_salvage_value_pence(inputs_df)
+
+
+def _incumbent_is_usable(
+    *,
+    direction,
+    soc,
+    b_charge,
+    b_discharge,
+    g_import,
+    g_export,
+    soc_min_kwh: float,
+    soc_max_kwh: float,
+    init_soc_kwh: float,
+    eta_c: float,
+    max_charge_energy: float,
+    max_discharge_energy: float,
+) -> bool:
+    """True when the solver left a finite, *feasible* incumbent behind.
+
+    HiGHS stops at its time limit with the best feasible solution it has found,
+    and cvxpy still unpacks it (with a "solution may be inaccurate" warning).
+    That plan satisfies every constraint — it just isn't proven optimal — so it
+    is safe to dispatch. On 2026-11-09 Cosy made inverted-spread slots routine
+    (every cheap window has export > import), the MILP grew from a handful of
+    binaries to ~37, and a Render run hit the 20 s limit and failed the user's
+    Preview. Failing closed there was the wrong call: an incumbent is a valid
+    plan, and the alternative is no plan at all.
+
+    But a solver stopped *before* finding any feasible point also reports
+    ``user_limit`` with a junk vector (all zeros — SOC 0%, below the floor).
+    So this checks the bounds that matter rather than trusting the status.
+    """
+
+    def arr(var):
+        if var is None or var.value is None:
+            return None
+        values = np.asarray(var.value, dtype=float).ravel()
+        return values if np.all(np.isfinite(values)) else None
+
+    soc_v = arr(soc)
+    charge = arr(b_charge)
+    discharge = arr(b_discharge)
+    grid_in = arr(g_import)
+    grid_out = arr(g_export)
+    if any(v is None for v in (soc_v, charge, discharge, grid_in, grid_out)):
+        return False
+
+    tol = 1e-4
+    if min(charge.min(), discharge.min(), grid_in.min(), grid_out.min()) < -tol:
+        return False
+    if charge.max() > max_charge_energy + tol:
+        return False
+    if discharge.max() > max_discharge_energy + tol:
+        return False
+    if soc_v.max() > soc_max_kwh + tol:
+        return False
+    for t, value in enumerate(soc_v):
+        # Mirrors the model's relaxed floor: a below-min start may ramp up.
+        lower = min(soc_min_kwh, init_soc_kwh + t * eta_c * max_charge_energy)
+        if value < lower - tol:
+            return False
+
+    if direction is not None:
+        binaries = arr(direction)
+        if binaries is None:
+            return False
+        if binaries.size and not np.all(np.isclose(binaries, np.round(binaries), atol=1e-6)):
+            return False
+    return True
 
 
 def mvp_cost_minimiser(
@@ -320,20 +393,19 @@ def mvp_cost_minimiser(
         except cp.error.SolverError:
             problem.solve(verbose=False)
     else:
-        # `mip_abs_gap` = £0.0001 (0.01p) over the whole horizon: exact enough
-        # for a plan worth a couple of pounds, and it stops HiGHS spending
-        # seconds proving a gap nobody cares about. On an extreme day (20h of
-        # negative prices → 40 binaries) this is ~6-12s; on a normal day there
-        # are no binaries and the LP path above is unchanged.
+        # `mip_abs_gap` = £0.01 (1p) over the whole horizon. It used to be £0.0001
+        # (0.01p), which cost ~3x the solve time to prove a gap nobody cares
+        # about: measured on the live 2026-11-09 Cosy plan, 3.6 s at 1e-4 vs
+        # 1.3 s at 1e-2, both optimal. With Cosy every cheap window has
+        # export > import, so the MILP is now routine rather than exceptional.
         # `time_limit`: a pathological block must not stall the 30-min cron or
-        # a manual Preview indefinitely. Hitting the limit fails closed — the
-        # status check below raises before any schedule is built, so the
-        # inverter keeps its previous plan rather than getting a wrong one.
+        # a manual Preview indefinitely; if it is hit, the feasible incumbent is
+        # used (see `_incumbent_is_usable`) rather than failing the request.
         # MIP_TIME_LIMIT_S < the frontend's 30s apiFetch deadline.
         try:
             problem.solve(
                 solver=cp.HIGHS,
-                mip_abs_gap=1e-4,
+                mip_abs_gap=1e-2,
                 time_limit=MIP_TIME_LIMIT_S,
                 verbose=False,
             )
@@ -348,7 +420,34 @@ def mvp_cost_minimiser(
                 problem.solve(verbose=False)
 
     if problem.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
-        raise ValueError(f"Optimisation failed: {problem.status}")
+        # A time-limited MILP still has a feasible incumbent; use it rather than
+        # failing the request. Only `USER_LIMIT` (the solver's own time limit) is
+        # accepted — infeasible/unbounded/solver-error statuses still raise.
+        usable = (
+            direction is not None
+            and problem.status == cp.USER_LIMIT
+            and _incumbent_is_usable(
+                direction=direction,
+                soc=soc,
+                b_charge=b_charge,
+                b_discharge=b_discharge,
+                g_import=g_import,
+                g_export=g_export,
+                soc_min_kwh=soc_min_kwh,
+                soc_max_kwh=soc_max_kwh,
+                init_soc_kwh=init_soc_kwh,
+                eta_c=eta_c,
+                max_charge_energy=max_batt_charge_energy,
+                max_discharge_energy=max_batt_discharge_energy,
+            )
+        )
+        if usable:
+            logger.warning(
+                "Optimiser hit the MILP time limit (status=%s); using the feasible "
+                "incumbent, which may be slightly suboptimal.", problem.status
+            )
+        else:
+            raise ValueError(f"Optimisation failed: {problem.status}")
 
     # Build results DataFrame
     # Per-timestep cost (GBP)

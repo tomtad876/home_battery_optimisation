@@ -714,3 +714,58 @@ class TestGridDataQuality:
 
         assert len(result) == 3
         assert np.isfinite(result["cost_gbp"]).all()
+
+
+
+class TestTimeLimitedMilp:
+    """A time-limited MILP must return a *feasible* incumbent, not fail the user.
+
+    Cosy made inverted-spread slots routine (every cheap window has export >
+    import), so the MILP now has ~35 binaries instead of a handful. On a slow
+    Render instance that can hit the 20 s limit; failing closed surfaced as
+    "Optimisation failed: user_limit" in the UI on 2026-11-09. A solver stopped
+    before finding a feasible point also reports user_limit with a junk vector,
+    so the incumbent is bounds-checked rather than trusted.
+    """
+
+    class _Var:
+        def __init__(self, value):
+            self.value = value
+
+    def _check(self, **overrides):
+        from app.core.optimiser import _incumbent_is_usable
+
+        args = dict(
+            direction=self._Var([0.0, 1.0]),
+            soc=self._Var([1.0, 2.0]),
+            b_charge=self._Var([0.0, 0.0]),
+            b_discharge=self._Var([0.0, 0.0]),
+            g_import=self._Var([0.0, 0.0]),
+            g_export=self._Var([0.0, 0.0]),
+            soc_min_kwh=1.0,
+            soc_max_kwh=5.0,
+            init_soc_kwh=2.5,
+            eta_c=0.95,
+            max_charge_energy=1.5,
+            max_discharge_energy=1.5,
+        )
+        args.update(overrides)
+        return _incumbent_is_usable(**args)
+
+    def test_accepts_feasible_incumbent(self):
+        assert self._check()
+
+    def test_rejects_fractional_binary(self):
+        assert not self._check(direction=self._Var([0.0, 0.5]))
+
+    def test_rejects_soc_below_floor(self):
+        # The 1 ms failure mode: solver returns all zeros, SOC 0% vs 20% floor.
+        assert not self._check(soc=self._Var([0.0, 0.0]))
+
+    def test_rejects_negative_or_oversized_flows(self):
+        assert not self._check(b_charge=self._Var([-0.1, 0.0]))
+        assert not self._check(b_discharge=self._Var([2.0, 0.0]))
+
+    def test_rejects_missing_or_nan_values(self):
+        assert not self._check(soc=self._Var(None))
+        assert not self._check(g_import=self._Var([float("nan"), 0.0]))
