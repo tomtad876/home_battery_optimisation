@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from app.core.database import SessionLocal
 from app.core.encryption import encrypt_provider_config, decrypt_provider_config
+from app.services.tariff import get_active_tariff, resolve_prices
 
 
 # Fallback energy (kWh) per appliance for a planned event that has no
@@ -151,11 +152,12 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         SELECT
             f.period_end as period_end,
             COALESCE(sf.solar_kwh, 0.0) AS pv_estimate,
-            COALESCE(ar.import_price, ph.avg_import_price) AS price,
-            COALESCE(ar.export_price, ph.avg_export_price) AS export_price,
+            ar.import_price AS agile_import_price,
+            ar.export_price AS agile_export_price,
+            ph.avg_import_price AS avg_import_price,
+            ph.avg_export_price AS avg_export_price,
             COALESCE(h.avg_kwh, 0.3) AS demand_avg,
-            COALESCE(h.base_kwh, 0.3) AS demand_base,
-            (ar.import_price IS NULL) AS is_synthetic
+            COALESCE(h.base_kwh, 0.3) AS demand_base
         FROM forecast_series f
         LEFT JOIN solcast_forecast sf
             ON sf.period_end = f.period_end
@@ -186,9 +188,23 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         except TypeError:
             df["period_end"] = pd.to_datetime(df["period_end"]).dt.tz_localize("UTC")
         df["pv_estimate"] = df["pv_estimate"].astype(float)
-        # price: may be NULL (backfilled from price_history when unpublished)
-        df["price"] = df["price"].astype(float)
-        df["export_price"] = df["export_price"].astype(float)
+
+        # Prices come from the site's tariff, not directly from Agile. With Cosy
+        # the import leg is a fixed local-time window vector; export stays Agile
+        # unless the site chose a flat export rate. `is_synthetic` marks the
+        # backfilled/estimated tail that auto-push refuses to send to the device.
+        tariff = get_active_tariff(site_id)
+        price, export_price, is_synthetic = resolve_prices(
+            tariff,
+            df["period_end"],
+            agile_import=df.get("agile_import_price"),
+            agile_export=df.get("agile_export_price"),
+            avg_import=df.get("avg_import_price"),
+            avg_export=df.get("avg_export_price"),
+        )
+        df["price"] = price
+        df["export_price"] = export_price
+        df["is_synthetic"] = is_synthetic
 
         # Demand: normal mode keeps the learned 7-day half-hour-of-day average
         # (unchanged behaviour). Holiday mode collapses to the baseload floor,
@@ -200,12 +216,7 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         else:
             df["demand"] = df["demand_avg"].astype(float)
 
-        # is_synthetic: True where the price is a backfilled average rather than
-        # a published rate. Postgres boolean may arrive as bool or 't'/'f'.
-        if "is_synthetic" in df.columns:
-            df["is_synthetic"] = df["is_synthetic"].astype(str).str.lower().isin(["t", "true", "1"])
-        else:
-            df["is_synthetic"] = False
+        # is_synthetic was resolved above from the tariff price vectors.
 
         return df[["period_end", "pv_estimate", "price", "export_price", "demand", "is_synthetic"]]
     finally:
@@ -299,22 +310,14 @@ def create_battery(site_id: str, capacity_kwh: float, max_charge_kw: float,
 
 
 def create_tariff(site_id: str, import_type: str, export_type: str, config_json: dict | None = None) -> dict:
-    """Create a tariff config for a site."""
-    session = SessionLocal()
-    try:
-        import json
-        result = session.execute(
-            text("""INSERT INTO tariffs (id, site_id, import_type, export_type, config_json)
-                    VALUES (gen_random_uuid(), :sid, :itype, :etype, CAST(:conf AS json))
-                    RETURNING id, site_id, import_type, export_type, config_json"""),
-            {"sid": site_id, "itype": import_type, "etype": export_type,
-             "conf": json.dumps(config_json or {})}
-        )
-        row = result.mappings().first()
-        session.commit()
-        return dict(row)
-    finally:
-        session.close()
+    """Deprecated alias — use `app.services.tariff.upsert_tariff`.
+
+    Kept so an older import path cannot silently insert a second row for the
+    same site (which the unique index now rejects).
+    """
+    from app.services.tariff import upsert_tariff
+
+    return upsert_tariff(site_id, import_type, export_type, config_json)
 
 
 def get_user_battery(user_id: str) -> dict | None:
@@ -620,52 +623,61 @@ def get_battery_realtime(user_id: str) -> dict:
                 entry["pv_kwh"] = round(b["pv"], 3)
                 history.append(entry)
 
-            # Attach Agile prices to historic periods
+            # Attach the tariff's import price and Agile export price to each
+            # historic bucket. Matched on the slot's UTC period_end, not on an
+            # HH:MM string — the old string map silently mismatched across
+            # midnight and during BST.
             if history:
                 from datetime import timezone as tz, timedelta as td
-                bst = tz(td(hours=1))
-                first_time = history[0]["time"]
-                last_time = history[-1]["time"]
-                # Parse ISO times to get UTC bounds for the query
-                dt_first = datetime.fromisoformat(first_time)
-                dt_last = datetime.fromisoformat(last_time)
-                # Convert to UTC for DB query
-                if dt_first.tzinfo is None:
-                    dt_first = dt_first.replace(tzinfo=bst)
-                if dt_last.tzinfo is None:
-                    dt_last = dt_last.replace(tzinfo=bst)
-                dt_first_utc = dt_first.astimezone(tz.utc)
-                dt_last_utc = dt_last.astimezone(tz.utc) + td(minutes=30)
+
+                starts = []
+                for entry in history:
+                    start = datetime.fromisoformat(entry["time"])
+                    if start.tzinfo is None:
+                        start = start.replace(tzinfo=tz.utc)
+                    starts.append(start.astimezone(tz.utc))
+                period_ends = pd.to_datetime([s + td(minutes=30) for s in starts])
 
                 try:
-                    from sqlalchemy import text as sql_text
                     session = SessionLocal()
                     try:
-                        result = session.execute(sql_text("""
-                            SELECT period_end, import_price, export_price
-                            FROM agile_rates
-                            WHERE period_end >= :start AND period_end <= :end
-                            ORDER BY period_end
-                        """), {"start": dt_first_utc.replace(tzinfo=None),
-                               "end": dt_last_utc.replace(tzinfo=None)})
-                        price_map = {}
+                        result = session.execute(
+                            text("""
+                                SELECT period_end, import_price, export_price
+                                FROM agile_rates
+                                WHERE period_end >= :start AND period_end <= :end
+                                ORDER BY period_end
+                            """),
+                            {"start": period_ends.min().to_pydatetime(),
+                             "end": period_ends.max().to_pydatetime()},
+                        )
+                        price_by_slot = {}
                         for r in result.mappings():
                             pe = r["period_end"]
                             if pe.tzinfo is None:
                                 pe = pe.replace(tzinfo=tz.utc)
-                            pe_bst = pe.astimezone(bst)
-                            time_str = pe_bst.strftime("%H:%M")
-                            price_map[time_str] = {
-                                "import_price": float(r["import_price"]),
-                                "export_price": float(r["export_price"]),
-                            }
-                        for entry in history:
-                            hhmm = entry["time"][11:16]  # extract HH:MM from ISO
-                            if hhmm in price_map:
-                                entry["import_price"] = price_map[hhmm]["import_price"]
-                                entry["export_price"] = price_map[hhmm]["export_price"]
+                            price_by_slot[pd.Timestamp(pe).tz_convert("UTC")] = (
+                                float(r["import_price"]),
+                                float(r["export_price"]),
+                            )
                     finally:
                         session.close()
+
+                    agile_import = pd.Series(
+                        [price_by_slot.get(ts, (None, None))[0] for ts in period_ends]
+                    )
+                    agile_export = pd.Series(
+                        [price_by_slot.get(ts, (None, None))[1] for ts in period_ends]
+                    )
+                    import_prices, export_prices, _ = resolve_prices(
+                        get_active_tariff(str(battery["site_id"])),
+                        pd.Series(period_ends),
+                        agile_import=agile_import,
+                        agile_export=agile_export,
+                    )
+                    for entry, imp, exp in zip(history, import_prices, export_prices):
+                        entry["import_price"] = float(imp)
+                        entry["export_price"] = float(exp)
                 except Exception:
                     pass
         else:

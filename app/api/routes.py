@@ -10,10 +10,12 @@ from app.core.version import build_info
 from app.core.optimiser import mvp_cost_minimiser, resolve_salvage_value_pence
 from app.services.data_provider import (
     get_optimiser_inputs, get_user_site, create_site,
-    create_battery, create_tariff, get_user_battery, update_battery_provider_config,
+    create_battery, get_user_battery, update_battery_provider_config,
     update_battery_config, get_battery_realtime, update_site_holiday
 )
 from app.services.optimisation_runs import persist_optimisation_run, mark_run_status
+from app.services.tariff import get_active_tariff, upsert_tariff, resolve_prices
+from app.services import octopus
 from app.services.foxess import classify_optimiser_output, classify_and_push
 from app.services.event_detector import detect_events
 from app.models.demandevent import DemandEvent, DemandDayInventory
@@ -242,9 +244,69 @@ class CreateTariffRequest(BaseModel):
     export_type: str = "agile"
     config_json: dict | None = None
 
+
+class TariffUpdateRequest(BaseModel):
+    import_type: str = "agile"
+    export_type: str = "agile"
+    config_json: dict | None = None
+
+
+def _live_rate_summary(tariff: dict) -> dict | None:
+    """Best-effort current Octopus rates for the configured product/region."""
+    if tariff["import_type"] != "cosy":
+        return None
+    now = datetime.now(timezone.utc)
+    rates = octopus.get_standard_unit_rates(
+        tariff["import"]["product_code"],
+        tariff["region_code"],
+        now,
+        now + timedelta(hours=48),
+    )
+    if not rates:
+        return None
+    distinct = sorted({round(r["pence"], 2) for r in rates})
+    return {
+        "product_code": tariff["import"]["product_code"],
+        "region_code": tariff["region_code"],
+        "distinct_pence": distinct,
+    }
+
+
+@router.get("/tariff")
+def get_tariff(include_live: bool = False, user: dict = Depends(verify_token)):
+    """The site's active import/export tariff.
+
+    ``include_live=true`` also asks Octopus for the currently published rates —
+    the Settings page uses it to show what the optimiser will really use.
+    """
+    site = get_user_site(user.get("sub"))
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found")
+    tariff = get_active_tariff(str(site["id"]))
+    return {
+        "tariff": tariff,
+        "live_rates": _live_rate_summary(tariff) if include_live else None,
+    }
+
+
+@router.put("/tariff")
+def put_tariff(req: TariffUpdateRequest, user: dict = Depends(verify_token)):
+    """Create or replace the authenticated user's tariff (switch tariffs)."""
+    site = get_user_site(user.get("sub"))
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found")
+    try:
+        tariff = upsert_tariff(
+            str(site["id"]), req.import_type, req.export_type, req.config_json
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"tariff": tariff, "live_rates": _live_rate_summary(tariff)}
+
+
 @router.post("/tariffs")
 def post_tariff(req: CreateTariffRequest, user: dict = Depends(verify_token)):
-    """Create tariff config for a site."""
+    """Create/replace a tariff config for a site (setup wizard)."""
     user_id = user.get("sub")
     site = get_user_site(user_id)
     if not site:
@@ -252,45 +314,71 @@ def post_tariff(req: CreateTariffRequest, user: dict = Depends(verify_token)):
     if str(site["id"]) != req.site_id:
         raise HTTPException(status_code=403, detail="Not your site")
 
-    tariff = create_tariff(
-        site_id=req.site_id,
-        import_type=req.import_type,
-        export_type=req.export_type,
-        config_json=req.config_json,
-    )
+    try:
+        tariff = upsert_tariff(
+            req.site_id, req.import_type, req.export_type, req.config_json
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"tariff": tariff}
 
 
 @router.get("/tariff/prices")
 def get_prices(user: dict = Depends(verify_token)):
-    """Return all Agile prices for today (past + future) from agile_rates."""
+    """Effective import prices (tariff-aware) and Agile export prices.
+
+    Covers from local midnight today through +48 h so the chart can draw the
+    price line across history and the plan. Cosy import prices are known for the
+    whole window; Outgoing Agile export prices only where published.
+    """
     from sqlalchemy import text
     from app.core.database import SessionLocal
-    from datetime import timezone, timedelta
+    import pandas as pd
+
+    site = get_user_site(user.get("sub"))
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found")
+    tariff = get_active_tariff(str(site["id"]))
+
+    now = datetime.now(timezone.utc)
+    start = pd.Timestamp(now).tz_convert("Europe/London").normalize().tz_convert("UTC")
+    index = pd.date_range(start, pd.Timestamp(now) + pd.Timedelta(hours=48), freq="30min")
+
     session = SessionLocal()
     try:
         result = session.execute(text("""
             SELECT period_end, import_price, export_price
             FROM agile_rates
-            WHERE period_end >= date_trunc('day', now() AT TIME ZONE 'Europe/London')
-              AND period_end < now() + interval '2 days'
+            WHERE period_end >= :start AND period_end <= :end
             ORDER BY period_end
-        """))
-        rows = []
-        bst = timezone(timedelta(hours=1))
+        """), {"start": index.min().to_pydatetime(), "end": index.max().to_pydatetime()})
+        published = {}
         for r in result.mappings().all():
             pe = r["period_end"]
-            # Ensure timezone-aware: if naive, assume UTC then convert to BST
             if pe.tzinfo is None:
-                pe = pe.replace(tzinfo=timezone.utc).astimezone(bst)
-            rows.append({
-                "period_end": pe.isoformat(),
-                "import_price": float(r["import_price"]),
-                "export_price": float(r["export_price"]),
-            })
-        return {"prices": rows}
+                pe = pe.replace(tzinfo=timezone.utc)
+            published[pd.Timestamp(pe).tz_convert("UTC")] = (
+                float(r["import_price"]), float(r["export_price"])
+            )
     finally:
         session.close()
+
+    agile_import = pd.Series([published.get(ts, (None, None))[0] for ts in index])
+    agile_export = pd.Series([published.get(ts, (None, None))[1] for ts in index])
+    import_prices, export_prices, is_synthetic = resolve_prices(
+        tariff, pd.Series(index), agile_import=agile_import, agile_export=agile_export
+    )
+
+    rows = []
+    for ts, imp, exp, synthetic in zip(index, import_prices, export_prices, is_synthetic):
+        rows.append({
+            "period_end": ts.isoformat(),
+            "import_price": float(imp),
+            "export_price": float(exp),
+            "is_synthetic": bool(synthetic),
+        })
+    return {"prices": rows, "tariff": {"import_type": tariff["import_type"],
+                                       "export_type": tariff["export_type"]}}
 
 
 # --- Real-time battery data ---
