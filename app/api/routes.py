@@ -1020,3 +1020,92 @@ def upsert_inventory(day: date, req: InventoryRequest, user: dict = Depends(veri
         return {"day": _inventory_to_dict(row)}
     finally:
         session.close()
+
+
+# --- Cost history -----------------------------------------------------------
+# "What did the kit save, and how much of that is the optimiser?"
+# Four layers, priced at the tariff actually in force (site_tariff_history):
+# no kit -> solar only -> self-use battery -> actual.
+
+from app.services import cost_history as cost_history_service  # noqa: E402
+
+_WINDOW_DAYS = {"today": 1, "7d": 7, "30d": 30, "365d": 365}
+
+
+@router.get("/history/summary")
+def get_history_summary(window: str = "30d", user: dict = Depends(verify_token)):
+    """Aggregate savings for today / 7d / 30d / 365d / all.
+
+    ``total_value_gbp`` is what the kit saved against buying everything from the
+    grid; it splits into ``solar_value_gbp``, ``battery_value_gbp`` (the battery
+    under dumb self-use control) and ``optimiser_value_gbp`` (what smart dispatch
+    added on top of that).
+    """
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site configured")
+
+    today = datetime.now(ZoneInfo(site.get("timezone") or "Europe/London")).date()
+    if window == "all":
+        since = None
+    elif window in _WINDOW_DAYS:
+        since = today - timedelta(days=_WINDOW_DAYS[window] - 1)
+    else:
+        raise HTTPException(status_code=400, detail="window must be today, 7d, 30d, 365d or all")
+
+    data = cost_history_service.summary(str(site["id"]), since=since)
+    return {"window": window, "site_id": str(site["id"]), **data}
+
+
+@router.get("/history/daily")
+def get_history_daily(from_date: str | None = None, to_date: str | None = None,
+                      user: dict = Depends(verify_token)):
+    """Per-day rows for the chart. Defaults to the last 30 days."""
+    user_id = user.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: no user sub")
+    site = get_user_site(user_id)
+    if not site:
+        raise HTTPException(status_code=404, detail="No site configured")
+
+    tz = ZoneInfo(site.get("timezone") or "Europe/London")
+    today = datetime.now(tz).date()
+    try:
+        start = date.fromisoformat(from_date) if from_date else today - timedelta(days=29)
+        end = date.fromisoformat(to_date) if to_date else today
+    except ValueError:
+        raise HTTPException(status_code=400, detail="dates must be YYYY-MM-DD")
+    if end < start:
+        raise HTTPException(status_code=400, detail="to_date before from_date")
+
+    from sqlalchemy import text as _text
+    session = SessionLocal()
+    try:
+        rows = session.execute(
+            _text(
+                """SELECT day, import_kwh, export_kwh, pv_kwh, load_kwh,
+                          import_cost_gbp, export_income_gbp, standing_gbp, net_cost_gbp,
+                          nokit_cost_gbp, solar_only_cost_gbp, selfuse_cost_gbp,
+                          solar_value_gbp, battery_value_gbp, optimiser_value_gbp, total_value_gbp,
+                          soc_min_pct, soc_max_pct, covered_slots, expected_slots, source
+                   FROM daily_cost_summary
+                   WHERE site_id = :sid AND day >= :start AND day <= :end
+                   ORDER BY day"""
+            ),
+            {"sid": str(site["id"]), "start": start, "end": end},
+        ).mappings().all()
+    finally:
+        session.close()
+
+    periods = cost_history_service.get_tariff_periods(str(site["id"]))
+    days = []
+    for r in rows:
+        row = {**dict(r), "day": r["day"].isoformat()}
+        # so the chart can mark where the tariff changed
+        row["tariff_label"] = cost_history_service.label_for_day(periods, r["day"])
+        days.append(row)
+    return {"site_id": str(site["id"]), "from": start.isoformat(), "to": end.isoformat(),
+            "days": days}
