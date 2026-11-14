@@ -82,6 +82,27 @@ def get_tariff_periods(site_id: str) -> list[dict]:
     return periods
 
 
+def tariff_label(period: dict) -> str:
+    """Human label for a tariff period, e.g. "Agile · Outgoing 12p"."""
+    imp = (period.get("import_type") or "").title() or "Unknown"
+    if (period.get("export_type") or "") == "fixed":
+        pence = (period.get("export_config") or {}).get("flat_pence")
+        exp = f"Outgoing {float(pence):g}p" if pence is not None else "Outgoing fixed"
+    else:
+        exp = "Agile Outgoing"
+    return f"{imp} · {exp}"
+
+
+def label_for_day(periods: list[dict], day: date) -> str | None:
+    """The tariff label in force at midday on ``day`` (stable across DST)."""
+    at = datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc)
+    chosen = None
+    for p in periods:
+        if p["valid_from"] <= at:
+            chosen = p
+    return tariff_label(chosen) if chosen else None
+
+
 def _period_tariff(period: dict) -> dict:
     """Shape a history row into the dict ``resolve_prices``/``cosy_prices`` expect."""
     return normalise_tariff({

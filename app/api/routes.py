@@ -1100,5 +1100,12 @@ def get_history_daily(from_date: str | None = None, to_date: str | None = None,
     finally:
         session.close()
 
+    periods = cost_history_service.get_tariff_periods(str(site["id"]))
+    days = []
+    for r in rows:
+        row = {**dict(r), "day": r["day"].isoformat()}
+        # so the chart can mark where the tariff changed
+        row["tariff_label"] = cost_history_service.label_for_day(periods, r["day"])
+        days.append(row)
     return {"site_id": str(site["id"]), "from": start.isoformat(), "to": end.isoformat(),
-            "days": [{**dict(r), "day": r["day"].isoformat()} for r in rows]}
+            "days": days}
