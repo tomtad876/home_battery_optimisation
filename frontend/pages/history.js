@@ -36,7 +36,7 @@ function isoDaysAgo(days) {
 }
 
 /** The three-way split the page exists to show. */
-function Attribution({ data, windowLabel }) {
+function Attribution({ data, windowKey, onWindow, recent }) {
   const solar = Number(data?.solar_value_gbp || 0)
   const battery = Number(data?.battery_value_gbp || 0)
   const optimiser = Number(data?.optimiser_value_gbp || 0)
@@ -51,13 +51,27 @@ function Attribution({ data, windowLabel }) {
 
   return (
     <div className="bg-surface border border-hairline rounded-card shadow-card p-5">
-      <div className="flex items-baseline justify-between mb-1">
+      <div className="flex items-baseline justify-between mb-1 gap-2">
         <h2 className="text-lg font-semibold text-ink">Where the saving came from</h2>
-        <span className="text-sm text-ink-muted">{money(total)} · {windowLabel}</span>
+        <div className="flex rounded-full border border-hairline overflow-hidden shrink-0">
+          {[
+            { key: '7d', label: '7d' },
+            { key: '30d', label: '30d' },
+            { key: 'all', label: 'All' },
+          ].map((w) => (
+            <button
+              key={w.key}
+              onClick={() => onWindow(w.key)}
+              className={`px-2.5 py-1 text-xs ${windowKey === w.key ? 'bg-signal/15 text-signal' : 'text-ink-muted hover:text-ink'}`}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
       </div>
       <p className="text-xs text-ink-muted mb-4">
-        Against buying every kWh from the grid at your import rate, plus standing charge.
-        Percentages are each source&apos;s share of the total saving.
+        {money(total)} over {data?.days ?? '—'} days, against buying every kWh from the grid at
+        your import rate plus standing charge. Percentages are each source&apos;s share of the total.
       </p>
 
       <div className="flex h-3 w-full overflow-hidden rounded-full bg-surface-2 border border-hairline mb-4">
@@ -95,8 +109,16 @@ function Attribution({ data, windowLabel }) {
 
       {optimiser < 0 && (
         <p className="text-xs text-danger-ink mt-3">
-          The optimiser is currently behind the self-use baseline: moving the battery against prices has
-          not yet paid for the forecast risk it takes on.
+          Over this window the optimiser is behind the self-use baseline: moving the battery against
+          prices has not yet paid for the forecast risk it takes on.
+        </p>
+      )}
+      {windowKey === 'all' && recent && (
+        <p className={`text-xs mt-2 ${Number(recent.optimiser_value_gbp) >= 0 ? 'text-ok-ink' : 'text-danger-ink'}`}>
+          Last 7 days: {money(recent.optimiser_value_gbp)}.
+          {Number(recent.optimiser_value_gbp) >= 0
+            ? ' It earns on price spreads, so the all-time figure is seasonal rather than fixed.'
+            : ' Still behind — no spread to earn from recently.'}
         </p>
       )}
 
@@ -117,6 +139,7 @@ export default function History() {
   const [summaries, setSummaries] = useState({})
   const [daily, setDaily] = useState([])
   const [range, setRange] = useState('90')
+  const [attrWindow, setAttrWindow] = useState('all')
   const [mode, setMode] = useState('daily')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -285,7 +308,12 @@ export default function History() {
               </div>
 
               <div className="grid lg:grid-cols-2 gap-4 mb-6">
-                <Attribution data={summaries['30d'] || allTime} windowLabel="last 30 days" />
+                <Attribution
+                  data={summaries[attrWindow] || allTime}
+                  windowKey={attrWindow}
+                  onWindow={setAttrWindow}
+                  recent={summaries['7d']}
+                />
                 <div className="bg-surface border border-hairline rounded-card shadow-card p-5">
                   <h2 className="text-lg font-semibold mb-1">Energy and money, all time</h2>
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mt-3">
