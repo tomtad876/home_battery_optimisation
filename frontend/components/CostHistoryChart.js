@@ -153,7 +153,7 @@ export default function CostHistoryChart({ days, mode = 'daily' }) {
       ]
 
   return (
-    <div className="h-72">
+    <div className="h-60 sm:h-72">
       <Bar
         data={{ labels, datasets }}
         options={{

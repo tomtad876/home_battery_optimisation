@@ -66,9 +66,9 @@ function Attribution({ data, windowLabel }) {
         {segment(optimiser, 'bg-signal')}
       </div>
 
-      <dl className="grid grid-cols-3 gap-3 text-sm">
-        <div>
-          <dt className="flex items-center gap-2 text-ink-muted">
+      <dl className="grid grid-cols-3 gap-2 sm:gap-3 text-xs sm:text-sm">
+        <div className="min-w-0">
+          <dt className="flex items-center gap-1.5 sm:gap-2 text-ink-muted">
             <span className="w-2 h-2 rounded-full bg-solar" /> Solar
           </dt>
           <dd className="text-ink font-semibold mt-1">
@@ -223,14 +223,14 @@ export default function History() {
 
       <main className="min-h-screen bg-canvas text-ink px-4 py-6">
         <div className="max-w-5xl mx-auto">
-          <header className="flex items-center justify-between mb-8">
+          <header className="flex flex-wrap items-start justify-between gap-3 mb-8">
             <div>
-              <h1 className="text-2xl font-bold">Cost history</h1>
+              <h1 className="text-xl sm:text-2xl font-bold">Cost history</h1>
               <p className="text-sm text-ink-muted">
                 {site?.name ? `${site.name} — ` : ''}what the kit saved, and what did the saving
               </p>
             </div>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <a href="/" className="text-sm text-ink-muted hover:text-ink">Dashboard</a>
               <a href="/events" className="text-sm text-ink-muted hover:text-ink">Events</a>
               <a href="/settings" className="text-sm text-ink-muted hover:text-ink">Settings</a>
@@ -265,7 +265,7 @@ export default function History() {
           {hasData && (
             <>
               {/* Headline cards */}
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 mb-6">
                 {WINDOWS.map((w) => {
                   const d = summaries[w.key]
                   const value = d?.total_value_gbp
@@ -284,7 +284,7 @@ export default function History() {
                 })}
               </div>
 
-              <div className="grid md:grid-cols-2 gap-4 mb-6">
+              <div className="grid lg:grid-cols-2 gap-4 mb-6">
                 <Attribution data={summaries['30d'] || allTime} windowLabel="last 30 days" />
                 <div className="bg-surface border border-hairline rounded-card shadow-card p-5">
                   <h2 className="text-lg font-semibold mb-1">Energy and money, all time</h2>
