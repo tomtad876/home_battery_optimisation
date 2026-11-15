@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Boolean, Column, DateTime, String, text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from app.core.database import Base
 
@@ -15,3 +15,7 @@ class Site(Base):
     holiday_mode = Column(Boolean, nullable=False, server_default=text("false"))
     # Optional auto-expiry: after this instant holiday mode is treated as off.
     holiday_until = Column(DateTime(timezone=True), nullable=True)
+    # Flexibility (VPP) income the site is assumed to earn per month, in pence.
+    # Axle pays on separate rails, so it never appears in meter or tariff data.
+    # 0 by default - an assumption the user opts into, never applied silently.
+    flex_income_pence_per_month = Column(Integer, nullable=False, server_default="0")

@@ -56,6 +56,8 @@ class DailyCostSummary(Base):
     solar_only_cost_gbp = Column(Float, nullable=False, server_default="0")
     selfuse_cost_gbp = Column(Float, nullable=False, server_default="0")
 
+    # Estimated flexibility (VPP) income accrued for the day - NOT measured.
+    flex_income_gbp = Column(Float, nullable=False, server_default="0")
     solar_value_gbp = Column(Float, nullable=False, server_default="0")
     battery_value_gbp = Column(Float, nullable=False, server_default="0")
     optimiser_value_gbp = Column(Float, nullable=False, server_default="0")
