@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -45,9 +46,14 @@ def _add_planned_events(df: pd.DataFrame, session, site_id: str, now: datetime) 
     """Add explicitly scheduled (status='planned') events to `df['demand']`, in place.
 
     Each event's energy is spread evenly across the half-hour slots its window
-    overlaps. Only called in holiday mode: in normal mode the learned 7-day
-    average already contains the routine, so injecting the same event again
-    would double-count it.
+    overlaps, and added to whichever baseline is in force.
+
+    Applied in normal mode too (since 2026-11-15): a logged event is a statement
+    about today, and ignoring it meant the optimiser planned baseload while the
+    house ran a heat pump. The double-counting risk is real against a *mean*
+    baseline — the 7-day mean already contains routine appliance use — which is
+    why the median baseline exists (DEMAND_BASELINE=median); it strips the
+    routine out so the events put it back deliberately.
     """
     horizon_end = now + timedelta(hours=HORIZON_HOURS)
     rows = session.execute(text("""
@@ -110,6 +116,10 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
                 floor(date_part('hour', period_end AT TIME ZONE 'Europe/London') * 2
                     + date_part('minute', period_end AT TIME ZONE 'Europe/London') / 30) AS hh_slot,
                 AVG(value_kw) / 2.0 AS avg_kwh,
+                -- Median of the same slot. Robust to the occasional big run, which
+                -- matters once planned events are added on top: a mean already
+                -- contains the routine appliance use, so mean + events double-counts.
+                percentile_cont(0.5) WITHIN GROUP (ORDER BY value_kw) / 2.0 AS median_kwh,
                 -- Baseload floor: the 20th percentile of the 5-min samples in
                 -- this half-hour-of-day slot over the trailing 7 days. This is
                 -- the always-on load (fridge/router/standby) with appliance
@@ -157,6 +167,7 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
             ph.avg_import_price AS avg_import_price,
             ph.avg_export_price AS avg_export_price,
             COALESCE(h.avg_kwh, 0.3) AS demand_avg,
+            COALESCE(h.median_kwh, 0.3) AS demand_median,
             COALESCE(h.base_kwh, 0.3) AS demand_base
         FROM forecast_series f
         LEFT JOIN solcast_forecast sf
@@ -206,15 +217,28 @@ def get_optimiser_inputs(site_id: str) -> pd.DataFrame:
         df["export_price"] = export_price
         df["is_synthetic"] = is_synthetic
 
-        # Demand: normal mode keeps the learned 7-day half-hour-of-day average
-        # (unchanged behaviour). Holiday mode collapses to the baseload floor,
-        # then adds explicitly scheduled (planned) events — so a single Cosy run
-        # can still be scheduled before returning home.
+        # Demand baseline.
+        #
+        # Normal mode: the learned 7-day half-hour-of-day profile. Mean is the
+        # default because it is the measured-better choice today (the audit found
+        # it still under-forecasts by ~18%, so a median would widen that gap until
+        # appliance logging is routine). Set DEMAND_BASELINE=median to A/B it in
+        # the forecast harness — median is the right baseline *once* planned
+        # events are reliably logged, because a mean already contains the routine
+        # and adding events on top of it double-counts.
+        #
+        # Holiday mode: collapse to the baseload floor (the house is empty).
         if _holiday_active(session, site_id):
             df["demand"] = df["demand_base"].astype(float)
-            _add_planned_events(df, session, site_id, datetime.now(timezone.utc))
+        elif os.environ.get("DEMAND_BASELINE", "mean").lower() == "median":
+            df["demand"] = df["demand_median"].astype(float)
         else:
             df["demand"] = df["demand_avg"].astype(float)
+
+        # Planned events apply in *every* mode. They used to be holiday-only, so a
+        # logged heating or Cosy run silently did nothing to a normal day's plan —
+        # the optimiser planned baseload and delivered a heat pump (2026-10-24).
+        _add_planned_events(df, session, site_id, datetime.now(timezone.utc))
 
         # is_synthetic was resolved above from the tariff price vectors.
 
