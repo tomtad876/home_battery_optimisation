@@ -65,3 +65,5 @@ supabase/.temp/
 # Local env / Vercel CLI artifacts (never commit secrets)
 .vercel
 .env*.local
+bt_prices.csv
+bt_load_pv.csv
