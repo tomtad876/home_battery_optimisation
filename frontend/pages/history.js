@@ -40,8 +40,9 @@ function Attribution({ data, windowKey, onWindow, recent }) {
   const solar = Number(data?.solar_value_gbp || 0)
   const battery = Number(data?.battery_value_gbp || 0)
   const optimiser = Number(data?.optimiser_value_gbp || 0)
-  const total = Number(data?.total_value_gbp || 0)
-  const positive = Math.max(solar, 0) + Math.max(battery, 0) + Math.max(optimiser, 0)
+  const flex = Number(data?.flex_income_gbp || 0)
+  const total = Number(data?.total_value_incl_flex_gbp ?? data?.total_value_gbp ?? 0)
+  const positive = Math.max(solar, 0) + Math.max(battery, 0) + Math.max(optimiser, 0) + Math.max(flex, 0)
 
   const segment = (value, colour) => {
     const v = Math.max(value, 0)
@@ -78,9 +79,10 @@ function Attribution({ data, windowKey, onWindow, recent }) {
         {segment(solar, 'bg-solar')}
         {segment(battery, 'bg-discharge')}
         {segment(optimiser, 'bg-signal')}
+        {segment(flex, 'bg-gridout')}
       </div>
 
-      <dl className="grid grid-cols-3 gap-2 sm:gap-3 text-xs sm:text-sm">
+      <dl className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3 text-xs sm:text-sm">
         <div className="min-w-0">
           <dt className="flex items-center gap-1.5 sm:gap-2 text-ink-muted">
             <span className="w-2 h-2 rounded-full bg-solar" /> Solar
@@ -105,6 +107,14 @@ function Attribution({ data, windowKey, onWindow, recent }) {
             {money(optimiser)} <span className="text-ink-faint font-normal">{pct(optimiser, total)}%</span>
           </dd>
         </div>
+        <div className="min-w-0">
+          <dt className="flex items-center gap-1.5 sm:gap-2 text-ink-muted" title="Assumed monthly floor, not metered">
+            <span className="w-2 h-2 rounded-full bg-gridout" /> Flex (est.)
+          </dt>
+          <dd className="text-ink font-semibold mt-1">
+            {money(flex)} <span className="text-ink-faint font-normal">{pct(flex, total)}%</span>
+          </dd>
+        </div>
       </dl>
 
       {optimiser < 0 && (
@@ -127,6 +137,8 @@ function Attribution({ data, windowKey, onWindow, recent }) {
         from surplus PV, never importing to charge, never exporting from the battery.
         <strong className="text-ink-muted"> Optimiser</strong> is what this app adds on top of that, by
         moving the battery against prices. It is measured against an idealised device, so it is a hard baseline.
+        <strong className="text-ink-muted"> Flex</strong> is the flexibility/VPP income — an assumption
+        (your monthly floor), not a measurement, because it is paid outside Octopus.
       </p>
     </div>
   )
@@ -291,7 +303,7 @@ export default function History() {
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 mb-6">
                 {WINDOWS.map((w) => {
                   const d = summaries[w.key]
-                  const value = d?.total_value_gbp
+                  const value = d?.total_value_incl_flex_gbp ?? d?.total_value_gbp
                   return (
                     <div key={w.key} className="bg-surface border border-hairline rounded-card shadow-card p-4">
                       <p className="text-xs text-ink-muted">{w.label}</p>
@@ -335,6 +347,10 @@ export default function History() {
                     <dd className={`text-right font-semibold ${Number(allTime?.net_cost_gbp) < 0 ? 'text-gridout' : 'text-ink'}`}>
                       {money(allTime?.net_cost_gbp)}
                     </dd>
+                    <dt className="text-ink-muted pt-2 border-t border-hairline">Flex income (est.)</dt>
+                    <dd className="text-gridout text-right pt-2 border-t border-hairline">{money(allTime?.flex_income_gbp)}</dd>
+                    <dt className="text-ink-muted font-medium">Total value</dt>
+                    <dd className="text-ink text-right font-semibold">{money(allTime?.total_value_incl_flex_gbp)}</dd>
                   </dl>
                 </div>
               </div>
@@ -378,7 +394,8 @@ export default function History() {
               <p className="text-xs text-ink-faint leading-relaxed">
                 {allTime?.days} days of history ({allTime?.first_day} → {allTime?.last_day}),{' '}
                 {coverage != null ? `${coverage}% of half-hours covered` : 'coverage unknown'}.
-                Money is inc VAT, priced at the tariff in force each day.
+                Money is inc VAT, priced at the tariff in force each day. Flexibility income is an
+                estimate based on your monthly floor, not metered — Axle pays separately from Octopus.
                 Import and export come from your{' '}
                 {allTime?.source?.includes('octopus') ? 'supplier meter' : 'inverter (no Octopus connection)'}.
                 Days with missing readings are included as-is and will understate savings slightly.

@@ -87,6 +87,7 @@ class TestLayerIdentity:
                             lambda site, idx: pd.DataFrame({"import_pence": imp_p,
                                                             "export_pence": exp_p}, index=idx))
         monkeypatch.setattr(ch, "standing_pence_for", lambda site, day: 58.63)
+        monkeypatch.setattr(ch, "flex_income_pence_per_month", lambda site: 0.0)
         return ch.compute_days("site", slots[0].to_pydatetime(), slots[-1].to_pydatetime())
 
     def test_layers_sum_to_total(self, monkeypatch):
@@ -135,3 +136,46 @@ class TestTariffShaping:
         assert tariff["export_type"] == "fixed"
         assert tariff["import"]["flat_pence"] == 24.5
         assert tariff["export"]["flat_pence"] == 12.0
+
+
+class TestFlexIncome:
+    """Flexibility (VPP) income is an assumption, and must accrue exactly."""
+
+    def test_monthly_total_is_exact(self):
+        """Daily accrual must sum to the monthly figure, whatever the month length."""
+        import calendar
+        for year, month in ((2026, 2), (2026, 4), (2026, 7)):
+            days = calendar.monthrange(year, month)[1]
+            total = sum(
+                ch.flex_income_for_day(1000.0, date(year, month, d)) for d in range(1, days + 1)
+            )
+            assert total == pytest.approx(10.0, abs=1e-9), (year, month)
+
+    def test_zero_when_unset(self):
+        assert ch.flex_income_for_day(0.0, date(2026, 11, 15)) == 0.0
+        assert ch.flex_income_for_day(None, date(2026, 11, 15)) == 0.0
+
+    def test_daily_accrual_is_small_and_positive(self):
+        per_day = ch.flex_income_for_day(1000.0, date(2026, 11, 15))
+        assert 0.30 < per_day < 0.36   # ~£10 / 30 days
+
+    def test_flex_income_lands_in_the_day_row(self, monkeypatch):
+        """A site's monthly assumption must appear daily and not touch kit savings."""
+        pv = [0.0] * 48
+        load = [1.0] * 48
+        slots = pd.date_range("2026-06-01", periods=48, freq="30min",
+                              tz="Europe/London").tz_convert("UTC")
+        frame = pd.DataFrame({"pv_kwh": pv, "load_kwh": load,
+                              "fox_import_kwh": [1.0] * 48, "fox_export_kwh": [0.0] * 48,
+                              "soc_pct": [50.0] * 48}, index=slots)
+        monkeypatch.setattr(ch, "load_series", lambda *a, **k: frame)
+        monkeypatch.setattr(ch, "resolve_rates",
+                            lambda site, idx: pd.DataFrame({"import_pence": 20.0,
+                                                            "export_pence": 10.0}, index=idx))
+        monkeypatch.setattr(ch, "standing_pence_for", lambda site, day: 58.63)
+        monkeypatch.setattr(ch, "flex_income_pence_per_month", lambda site: 1000.0)
+        row = ch.compute_days("site", slots[0].to_pydatetime(), slots[-1].to_pydatetime()).iloc[0]
+        assert row["flex_income_gbp"] == pytest.approx(10.0 / 30, abs=1e-9)
+        # kit savings must be unaffected by the assumption
+        assert row["total_value_gbp"] == pytest.approx(
+            row["nokit_cost_gbp"] - row["net_cost_gbp"], abs=1e-9)

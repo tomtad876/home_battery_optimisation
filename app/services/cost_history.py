@@ -21,6 +21,7 @@ like a real bill.
 """
 from __future__ import annotations
 
+import calendar
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
@@ -179,6 +180,38 @@ def resolve_rates(site_id: str, slots: pd.DatetimeIndex) -> pd.DataFrame:
     return out
 
 
+def flex_income_pence_per_month(site_id: str) -> float:
+    """Site's assumed monthly flexibility income in pence (0 when unset).
+
+    Axle-style VPP payments arrive on separate rails and never touch the meter or
+    tariff data, so this is an assumption the site opts into, not a measurement.
+    """
+    session = SessionLocal()
+    try:
+        row = session.execute(
+            text("SELECT flex_income_pence_per_month FROM sites WHERE id = :sid LIMIT 1"),
+            {"sid": site_id},
+        ).mappings().first()
+    finally:
+        session.close()
+    try:
+        return float((row or {}).get("flex_income_pence_per_month") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def flex_income_for_day(monthly_pence: float, day: date) -> float:
+    """Accrue a monthly amount evenly across the days in that month (GBP).
+
+    Divided by the real day count so a month sums to exactly the monthly figure -
+    otherwise February would over-credit and 31-day months under-credit.
+    """
+    if not monthly_pence:
+        return 0.0
+    days_in_month = calendar.monthrange(day.year, day.month)[1]
+    return monthly_pence / 100.0 / days_in_month
+
+
 def standing_pence_for(site_id: str, day: date) -> float:
     """Daily standing charge for the tariff in force on ``day`` (0 when unknown)."""
     periods = get_tariff_periods(site_id)
@@ -329,6 +362,7 @@ def compute_days(site_id: str, start: datetime, end: datetime, battery: dict | N
                           - df["self_export_kwh"] * df["export_pence"]) / 100.0
 
     df["day"] = df.index.tz_convert("Europe/London").date
+    monthly_flex_pence = flex_income_pence_per_month(site_id)
 
     rows = []
     for day, g in df.groupby("day"):
@@ -346,6 +380,7 @@ def compute_days(site_id: str, start: datetime, end: datetime, battery: dict | N
             "import_cost_gbp": float((g["actual_import_kwh"] * g["import_pence"] / 100).sum()),
             "export_income_gbp": float((g["actual_export_kwh"] * g["export_pence"] / 100).sum()),
             "standing_gbp": stand,
+            "flex_income_gbp": flex_income_for_day(monthly_flex_pence, day),
             "net_cost_gbp": actual,
             "nokit_cost_gbp": nokit,
             "solar_only_cost_gbp": solar_only,
@@ -379,7 +414,7 @@ def upsert_days(site_id: str, days: pd.DataFrame) -> int:
     if days is None or days.empty:
         return 0
     cols = ["day", "import_kwh", "export_kwh", "pv_kwh", "load_kwh", "import_cost_gbp",
-            "export_income_gbp", "standing_gbp", "net_cost_gbp", "nokit_cost_gbp",
+            "export_income_gbp", "standing_gbp", "flex_income_gbp", "net_cost_gbp", "nokit_cost_gbp",
             "solar_only_cost_gbp", "selfuse_cost_gbp", "solar_value_gbp", "battery_value_gbp",
             "optimiser_value_gbp", "total_value_gbp", "soc_min_pct", "soc_max_pct",
             "covered_slots", "expected_slots", "source"]
@@ -430,6 +465,8 @@ def summary(site_id: str, since: date | None = None) -> dict:
                           coalesce(sum(battery_value_gbp),0) AS battery_value_gbp,
                           coalesce(sum(optimiser_value_gbp),0) AS optimiser_value_gbp,
                           coalesce(sum(total_value_gbp),0) AS total_value_gbp,
+                          coalesce(sum(flex_income_gbp),0) AS flex_income_gbp,
+                          coalesce(sum(total_value_gbp + flex_income_gbp),0) AS total_value_incl_flex_gbp,
                           coalesce(sum(covered_slots),0) AS covered_slots,
                           coalesce(sum(expected_slots),0) AS expected_slots,
                           min(day) AS first_day, max(day) AS last_day

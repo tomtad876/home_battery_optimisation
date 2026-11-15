@@ -1089,7 +1089,8 @@ def get_history_daily(from_date: str | None = None, to_date: str | None = None,
                 """SELECT day, import_kwh, export_kwh, pv_kwh, load_kwh,
                           import_cost_gbp, export_income_gbp, standing_gbp, net_cost_gbp,
                           nokit_cost_gbp, solar_only_cost_gbp, selfuse_cost_gbp,
-                          solar_value_gbp, battery_value_gbp, optimiser_value_gbp, total_value_gbp,
+                          flex_income_gbp, solar_value_gbp, battery_value_gbp, optimiser_value_gbp,
+                          total_value_gbp, (total_value_gbp + flex_income_gbp) AS total_value_incl_flex_gbp,
                           soc_min_pct, soc_max_pct, covered_slots, expected_slots, source
                    FROM daily_cost_summary
                    WHERE site_id = :sid AND day >= :start AND day <= :end
