@@ -157,3 +157,41 @@ class TestPatchSite:
             resp = client.patch("/sites/me", json={})
             assert resp.status_code == 200
             mock_update.assert_not_called()
+
+
+# --- planned events in normal mode (2026-11-15) ---------------------------
+
+class TestPlannedEventsApplyInNormalMode:
+    """A logged event must reach the plan whether or not holiday mode is on.
+
+    Regression: planned events were holiday-only, so a Cosy run or heating block
+    logged for a normal day changed nothing in the forecast (found 2026-10-24).
+    """
+
+    def _df(self):
+        periods = pd.date_range("2026-06-01T00:00", periods=8, freq="30min", tz="UTC")
+        return pd.DataFrame({"period_end": periods, "demand": [0.1] * 8})
+
+    def _event(self, start, end, energy):
+        return {"appliance": "heating", "start_time": start, "end_time": end,
+                "energy_kwh": energy}
+
+    def test_event_energy_is_added(self):
+        df = self._df()
+        start = datetime(2026, 6, 1, 1, 0, tzinfo=timezone.utc)   # slots 01:00-02:00
+        end = datetime(2026, 6, 1, 2, 0, tzinfo=timezone.utc)
+        _add_planned_events(df, _FakeSession([self._event(start, end, 2.0)]), "site",
+                            datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc))
+
+        # slots are keyed by period_end, so a 01:00-02:00 event lands in the
+        # slots ending 01:30 and 02:00 (not the one ending 01:00, which is before it)
+        assert df["demand"].iloc[3] == pytest.approx(1.1)
+        assert df["demand"].iloc[4] == pytest.approx(1.1)
+        assert df["demand"].iloc[0] == pytest.approx(0.1)
+        assert df["demand"].sum() == pytest.approx(0.8 + 2.0)
+
+    def test_no_events_leaves_demand_alone(self):
+        df = self._df()
+        _add_planned_events(df, _FakeSession([]), "site",
+                            datetime(2026, 6, 1, tzinfo=timezone.utc))
+        assert df["demand"].tolist() == [0.1] * 8
