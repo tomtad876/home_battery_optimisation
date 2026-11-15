@@ -442,6 +442,56 @@ def upsert_days(site_id: str, days: pd.DataFrame) -> int:
     return len(payload)
 
 
+def _battery_params(site_id: str) -> dict | None:
+    session = SessionLocal()
+    try:
+        row = session.execute(
+            text("""SELECT capacity_kwh, max_charge_kw, max_discharge_kw, min_soc_pct, max_soc_pct
+                    FROM batteries WHERE site_id = :sid LIMIT 1"""),
+            {"sid": site_id},
+        ).mappings().first()
+    finally:
+        session.close()
+    return dict(row) if row else None
+
+
+def refresh_recent(days: int = 7) -> list[dict]:
+    """Recompute the last ``days`` for every site. Used by the nightly cron.
+
+    A rolling window rather than "yesterday" because supplier half-hourly data
+    settles late: a day can arrive or be revised for a couple of days, so
+    recomputing a week is what keeps the stored days honest. Idempotent.
+    """
+    days = max(1, min(int(days), 90))
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+
+    session = SessionLocal()
+    try:
+        sites = session.execute(text("SELECT id, name FROM sites ORDER BY name")).mappings().all()
+    finally:
+        session.close()
+
+    results = []
+    for site in sites:
+        sid = str(site["id"])
+        meter = None
+        try:
+            from app.services import octopus_meter
+            meter = octopus_meter.fetch_half_hourly(sid, start, end)
+        except Exception:
+            # a supplier outage must not stop the refresh; FoxESS fills in
+            meter = None
+        try:
+            frame = compute_days(sid, start, end, battery=_battery_params(sid), meter=meter)
+            n = upsert_days(sid, frame) if frame is not None and not frame.empty else 0
+            results.append({"site": site["name"], "days": n,
+                            "source": "octopus+foxess" if meter else "foxess", "error": None})
+        except Exception as exc:  # keep other sites going
+            results.append({"site": site["name"], "days": 0, "source": None, "error": str(exc)[:200]})
+    return results
+
+
 # ---------------------------------------------------------------- read side
 def summary(site_id: str, since: date | None = None) -> dict:
     """Aggregate the daily rows. Returns zeros rather than raising on no data."""

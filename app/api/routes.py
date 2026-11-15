@@ -1032,6 +1032,16 @@ from app.services import cost_history as cost_history_service  # noqa: E402
 _WINDOW_DAYS = {"today": 1, "7d": 7, "30d": 30, "365d": 365}
 
 
+@router.post("/internal/refresh-cost-history")
+def internal_refresh_cost_history(days: int = 7, _: dict = Depends(verify_internal_key)):
+    """Recompute recent days of cost history for every site. Called by pg_cron.
+
+    A rolling window (default 7 days) because supplier half-hourly data settles
+    late and can be revised for a couple of days. Idempotent.
+    """
+    return {"refreshed": cost_history_service.refresh_recent(days)}
+
+
 @router.get("/history/summary")
 def get_history_summary(window: str = "30d", user: dict = Depends(verify_token)):
     """Aggregate savings for today / 7d / 30d / 365d / all.
