@@ -1,0 +1,51 @@
+name: Deploy Edge Functions
+
+# The third deploy leg: Vercel builds the frontend and Render builds the
+# backend on merge; this does the Supabase Edge Functions. Keeps production
+# from depending on whichever laptop happens to have a working CLI and Docker.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "supabase/functions/**"
+      - ".github/workflows/deploy-edge-functions.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edge-functions-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: zkvnngijbostksjhkkdf
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy all five functions
+        run: |
+          set -euo pipefail
+          for fn in \
+            fetch-solcast \
+            fetch-agile-prices \
+            fetch-demand \
+            optimise-and-push \
+            fetch-heatpump
+          do
+            echo "::group::Deploying $fn"
+            supabase functions deploy "$fn" \
+              --project-ref "$SUPABASE_PROJECT_REF" \
+              --no-verify-jwt \
+              --use-api
+            echo "::endgroup::"
+          done
