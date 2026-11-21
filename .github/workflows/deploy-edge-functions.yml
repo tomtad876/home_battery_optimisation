@@ -44,8 +44,9 @@ jobs:
           do
             echo "::group::Deploying $fn"
             supabase functions deploy "$fn" \
-              --project-ref "$SUPABASE_PROJECT_REF" \
+              --remote="$SUPABASE_PROJECT_REF" \
               --no-verify-jwt \
-              --use-api
+              --use-api \
+              --yes
             echo "::endgroup::"
           done
