@@ -150,6 +150,39 @@ async function notify(summary: { success: boolean; processed: number; total: num
   }
 }
 
+/**
+ * Write a `failed` audit row for a run that ended before the inverter push.
+ *
+ * Every early exit used to `continue` without touching `schedules`, so a SOC
+ * fetch failure or a device-metadata throw left no trace in the DB — only the
+ * Sentry/healthchecks ping. That is how the 2026-11-17 FoxESS outage produced
+ * 16 consecutive silent runs (and two isolated 18:00 misses on 15/20 Nov).
+ * Best-effort: an audit failure must never mask the original error.
+ */
+async function recordFailureAudit(
+  client: any,
+  runId: string | null,
+  socPct: number | null,
+  message: string
+): Promise<void> {
+  try {
+    const { error } = await client.from("schedules").insert({
+      optimisation_run_id: runId,
+      status: "failed",
+      pushed_at: new Date().toISOString(),
+      trigger_source: "cron",
+      soc_at_push: socPct,
+      error_message: message,
+      foxess_groups: [],
+    });
+    if (error) {
+      console.error(`optimise-and-push: failure audit insert failed: ${error.message}`);
+    }
+  } catch (e) {
+    console.error("optimise-and-push: failure audit insert threw", e);
+  }
+}
+
 serve(async (req: Request) => {
   console.log("optimise-and-push: invoked");
 
@@ -194,32 +227,48 @@ serve(async (req: Request) => {
     const now = new Date();
 
     for (const battery of batteries) {
-      const config = await decryptProviderConfig(battery.provider_config, encryptionKey);
-      const foxessKey = config?.foxess_api_key;
-      const deviceSn = config?.foxess_device_sn;
-
-      if (!foxessKey || !deviceSn) {
-        console.log(`optimise-and-push: skipping battery ${battery.id} — missing credentials`);
-        continue;
-      }
-
-      // Get the site's user_id for the backend call
-      const { data: site } = await client
-        .from("sites")
-        .select("user_id")
-        .eq("id", battery.site_id)
-        .single();
-
-      if (!site?.user_id) {
-        errors.push(`Battery ${battery.id}: no user_id on site`);
-        continue;
-      }
+      // Scoped so the catch can close the audit trail even when the failure
+      // happens before the backend hands back a run id.
+      let runId: string | null = null;
+      let socPct: number | null = null;
+      let auditWritten = false;
 
       try {
+        const config = await decryptProviderConfig(battery.provider_config, encryptionKey);
+        const foxessKey = config?.foxess_api_key;
+        const deviceSn = config?.foxess_device_sn;
+
+        if (!foxessKey || !deviceSn) {
+          const msg = `Battery ${battery.id}: missing FoxESS credentials while auto-push is enabled`;
+          console.log(`optimise-and-push: skipping battery ${battery.id} — missing credentials`);
+          errors.push(msg);
+          await recordFailureAudit(client, null, null, msg);
+          auditWritten = true;
+          continue;
+        }
+
+        // Get the site's user_id for the backend call
+        const { data: site } = await client
+          .from("sites")
+          .select("user_id")
+          .eq("id", battery.site_id)
+          .single();
+
+        if (!site?.user_id) {
+          const msg = `Battery ${battery.id}: no user_id on site — cannot call the optimiser`;
+          errors.push(msg);
+          await recordFailureAudit(client, null, null, msg);
+          auditWritten = true;
+          continue;
+        }
+
         // 1. Fetch live SOC
-        const socPct = await fetchLiveSoc(foxessKey, deviceSn);
+        socPct = await fetchLiveSoc(foxessKey, deviceSn);
         if (socPct === null) {
-          errors.push(`Battery ${battery.id}: could not fetch SOC`);
+          const msg = `Battery ${battery.id}: could not fetch SOC`;
+          errors.push(msg);
+          await recordFailureAudit(client, null, null, msg);
+          auditWritten = true;
           continue;
         }
 
@@ -235,10 +284,16 @@ serve(async (req: Request) => {
           max_soc_pct: battery.max_soc_pct,
         });
         const schedule = optimiseResult?.schedule ?? null;
-        const runId = optimiseResult?.runId ?? null;
+        runId = optimiseResult?.runId ?? null;
 
         if (!schedule || schedule.length === 0) {
-          errors.push(`Battery ${battery.id}: optimiser returned no schedule`);
+          const msg = `Battery ${battery.id}: optimiser returned no schedule`;
+          errors.push(msg);
+          await recordFailureAudit(client, runId, socPct, msg);
+          auditWritten = true;
+          if (runId) {
+            await client.from("optimisation_runs").update({ status: "push_failed" }).eq("id", runId);
+          }
           continue;
         }
 
@@ -253,7 +308,7 @@ serve(async (req: Request) => {
         if (realSchedule.length < 2) {
           const msg = `Battery ${battery.id}: no published-price slots in the horizon — skipping synthetic plan`;
           errors.push(msg);
-          await client.from("schedules").insert({
+          const { error: auditError } = await client.from("schedules").insert({
             optimisation_run_id: runId,
             status: "failed",
             pushed_at: now.toISOString(),
@@ -262,6 +317,10 @@ serve(async (req: Request) => {
             error_message: msg,
             foxess_groups: [],
           });
+          auditWritten = true;
+          if (auditError) {
+            errors.push(`Battery ${battery.id}: audit insert failed: ${auditError.message}`);
+          }
           if (runId) {
             await client.from("optimisation_runs").update({ status: "skipped_no_prices" }).eq("id", runId);
           }
@@ -327,6 +386,7 @@ serve(async (req: Request) => {
           provider_response: providerResponse,
           error_message: pushError,
         });
+        auditWritten = true;
         if (auditError) {
           // Don't swallow this — a missing audit row is how the schedules table
           // silently stayed empty. Surface it on the run (and the heartbeat).
@@ -350,7 +410,22 @@ serve(async (req: Request) => {
           console.log(`optimise-and-push: battery ${battery.id} — pushed ${finalGroups.length} groups, SOC ${socPct}%`);
         }
       } catch (e) {
-        errors.push(`Battery ${battery.id}: ${e instanceof Error ? e.message : String(e)}`);
+        const msg = `Battery ${battery.id}: ${e instanceof Error ? e.message : String(e)}`;
+        errors.push(msg);
+        // Any throw between the SOC fetch and the push (device metadata,
+        // classifier, remain-mode) used to leave no row at all.
+        if (!auditWritten) {
+          await recordFailureAudit(client, runId, socPct, msg);
+        }
+        if (runId) {
+          const { error: statusError } = await client
+            .from("optimisation_runs")
+            .update({ status: "push_failed" })
+            .eq("id", runId);
+          if (statusError) {
+            errors.push(`Battery ${battery.id}: run status update failed: ${statusError.message}`);
+          }
+        }
       }
     }
 
